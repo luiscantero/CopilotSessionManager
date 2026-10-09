@@ -1,0 +1,18 @@
+# Rust / Tauri build output
+/src-tauri/target/
+/src-tauri/gen/schemas/
+
+# Node (if a JS toolchain is added later)
+node_modules/
+dist/
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

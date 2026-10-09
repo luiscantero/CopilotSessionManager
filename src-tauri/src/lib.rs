@@ -32,6 +32,7 @@ struct SessionSummary {
     cwd: Option<String>,
     repository: Option<String>,
     branch: Option<String>,
+    project: Project,
     created_at: Option<String>,
     updated_at: Option<String>,
     message_count: usize,
@@ -39,6 +40,16 @@ struct SessionSummary {
     deletions: Option<u64>,
     done: bool,
     in_use: bool,
+}
+
+/// Repository (or folder) a session belongs to, used to group and filter sessions.
+#[derive(Clone, Default, Debug, PartialEq, Serialize)]
+struct Project {
+    /// Stable grouping key; "none" when the session has no folder information.
+    key: String,
+    name: String,
+    /// Full repository name or folder path.
+    detail: String,
 }
 
 #[derive(Serialize)]
@@ -74,6 +85,7 @@ struct ParsedEvents {
 
 struct Entry {
     summary: SessionSummary,
+    git_root: Option<String>,
     title_lower: String,
     events: Arc<ParsedEvents>,
 }
@@ -102,6 +114,7 @@ struct WorkspaceMeta {
     name: Option<String>,
     summary: Option<String>,
     cwd: Option<String>,
+    git_root: Option<String>,
     repository: Option<String>,
     branch: Option<String>,
     created_at: Option<String>,
@@ -207,6 +220,7 @@ fn read_workspace(dir: &Path) -> WorkspaceMeta {
         name: get("name"),
         summary: get("summary"),
         cwd: get("cwd"),
+        git_root: get("git_root"),
         repository: get("repository"),
         branch: get("branch"),
         created_at: get("created_at"),
@@ -431,6 +445,96 @@ fn refresh_vscode_links(cache: &mut HashMap<PathBuf, VsCodeLink>) -> HashMap<Str
     sdk_to_vscode
 }
 
+fn normalize_path(path: &str) -> String {
+    let path = path.trim().replace('\\', "/");
+    let trimmed = path.trim_end_matches('/');
+    let path = if trimmed.is_empty() || trimmed.ends_with(':') {
+        format!("{trimmed}/")
+    } else {
+        trimmed.to_string()
+    };
+    if cfg!(windows) {
+        path.to_lowercase()
+    } else {
+        path
+    }
+}
+
+fn last_segment(text: &str) -> String {
+    text.trim()
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .find(|segment| !segment.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| text.trim().to_string())
+}
+
+fn repository_project(repository: &str) -> Project {
+    Project {
+        key: format!("repo:{}", repository.trim().to_lowercase()),
+        name: last_segment(repository),
+        detail: repository.trim().to_string(),
+    }
+}
+
+fn folder_project(path: &str) -> Project {
+    Project {
+        key: format!("path:{}", normalize_path(path)),
+        name: last_segment(path),
+        detail: path.trim().to_string(),
+    }
+}
+
+/// Groups sessions by repository. Sessions without repository metadata (for example started
+/// before the folder was a git repo, or in a subfolder) are matched to a known git root that
+/// contains their working directory, falling back to the working directory itself.
+fn assign_projects(entries: &mut [Entry]) {
+    let mut roots: HashMap<String, Project> = HashMap::new();
+    for entry in entries.iter() {
+        if let (Some(root), Some(repository)) = (&entry.git_root, &entry.summary.repository) {
+            roots
+                .entry(normalize_path(root))
+                .or_insert_with(|| repository_project(repository));
+        }
+    }
+    for entry in entries.iter() {
+        if let (Some(root), None) = (&entry.git_root, &entry.summary.repository) {
+            roots
+                .entry(normalize_path(root))
+                .or_insert_with(|| folder_project(root));
+        }
+    }
+
+    let containing_root = |path: &str| -> Option<Project> {
+        let path = normalize_path(path);
+        roots
+            .iter()
+            .filter(|(root, _)| {
+                path == **root
+                    || path
+                        .strip_prefix(root.as_str())
+                        .is_some_and(|rest| root.ends_with('/') || rest.starts_with('/'))
+            })
+            .max_by_key(|(root, _)| root.len())
+            .map(|(_, project)| project.clone())
+    };
+
+    for entry in entries.iter_mut() {
+        let summary = &entry.summary;
+        entry.summary.project = if let Some(repository) = &summary.repository {
+            repository_project(repository)
+        } else if let Some(root) = entry.git_root.as_deref().or(summary.cwd.as_deref()) {
+            containing_root(root).unwrap_or_else(|| folder_project(root))
+        } else {
+            Project {
+                key: "none".to_string(),
+                name: "No folder".to_string(),
+                detail: String::new(),
+            }
+        };
+    }
+}
+
 fn rebuild(index: &mut Index) -> Result<(), String> {
     let root = session_root()?;
     let dirs: Vec<(String, PathBuf)> = match fs::read_dir(&root) {
@@ -488,6 +592,7 @@ fn rebuild(index: &mut Index) -> Result<(), String> {
                 cwd: meta.cwd,
                 repository: meta.repository,
                 branch: meta.branch,
+                project: Project::default(),
                 created_at: meta
                     .created_at
                     .clone()
@@ -505,11 +610,13 @@ fn rebuild(index: &mut Index) -> Result<(), String> {
             Some(Entry {
                 title_lower: title.to_lowercase(),
                 summary,
+                git_root: meta.git_root,
                 events,
             })
         })
         .collect();
 
+    assign_projects(&mut entries);
     entries.sort_by(|a, b| b.summary.updated_at.cmp(&a.summary.updated_at));
     index.parsed = entries
         .iter()
@@ -786,30 +893,7 @@ mod tests {
             content: "The Broker pod restarted".to_string(),
             timestamp: None,
         }];
-        let entry = Entry {
-            summary: SessionSummary {
-                id: "24c442d3-ada5-4d9a-b945-c448f7d78023".to_string(),
-                title: "Failing integration tests".to_string(),
-                cwd: None,
-                repository: None,
-                branch: None,
-                created_at: None,
-                updated_at: None,
-                message_count: 1,
-                additions: None,
-                deletions: None,
-                done: false,
-                in_use: false,
-            },
-            title_lower: "failing integration tests".to_string(),
-            events: Arc::new(ParsedEvents {
-                stamp: (0, None),
-                lowered: messages.iter().map(|m| m.content.to_lowercase()).collect(),
-                messages,
-                first_timestamp: None,
-                last_timestamp: None,
-            }),
-        };
+        let entry = test_entry("Failing integration tests", messages, None, None, None);
         let index = Index {
             entries: vec![entry],
             ..Index::default()
@@ -823,5 +907,79 @@ mod tests {
         );
         assert!(search(&index, "tests dataflow").is_empty());
         assert_eq!(search(&index, "").len(), 1);
+    }
+
+    fn test_entry(
+        title: &str,
+        messages: Vec<ChatMessage>,
+        cwd: Option<&str>,
+        git_root: Option<&str>,
+        repository: Option<&str>,
+    ) -> Entry {
+        Entry {
+            summary: SessionSummary {
+                id: "24c442d3-ada5-4d9a-b945-c448f7d78023".to_string(),
+                title: title.to_string(),
+                cwd: cwd.map(str::to_owned),
+                repository: repository.map(str::to_owned),
+                branch: None,
+                project: Project::default(),
+                created_at: None,
+                updated_at: None,
+                message_count: messages.len(),
+                additions: None,
+                deletions: None,
+                done: false,
+                in_use: false,
+            },
+            git_root: git_root.map(str::to_owned),
+            title_lower: title.to_lowercase(),
+            events: Arc::new(ParsedEvents {
+                stamp: (0, None),
+                lowered: messages.iter().map(|m| m.content.to_lowercase()).collect(),
+                messages,
+                first_timestamp: None,
+                last_timestamp: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn groups_sessions_by_repository_or_folder() {
+        let entry = |cwd, git_root, repository| test_entry("t", Vec::new(), cwd, git_root, repository);
+        let mut entries = vec![
+            entry(
+                Some(r"c:\Repos\aio-tests"),
+                Some(r"C:\Repos\aio-tests"),
+                Some("DefaultCollection/One/aio-tests"),
+            ),
+            // Same repo, but started before it was a git repo.
+            entry(Some(r"C:\repos\AIO-tests\"), None, None),
+            // Subfolder of the repo without metadata.
+            entry(Some(r"C:\Repos\aio-tests\src\deep"), None, None),
+            // Sibling folder sharing the prefix must not match.
+            entry(Some(r"C:\Repos\aio-tests-old"), None, None),
+            // Local git repo without a remote.
+            entry(Some(r"C:\Repos\local\sub"), Some(r"C:\Repos\local"), None),
+            entry(None, None, None),
+            entry(Some(r"C:\"), None, None),
+        ];
+        assign_projects(&mut entries);
+        let projects: Vec<_> = entries
+            .iter()
+            .map(|e| (e.summary.project.key.as_str(), e.summary.project.name.as_str()))
+            .collect();
+        let repo = ("repo:defaultcollection/one/aio-tests", "aio-tests");
+        assert_eq!(projects[0], repo);
+        if cfg!(windows) {
+            assert_eq!(projects[1], repo);
+        }
+        assert_eq!(projects[2], repo);
+        assert_eq!(projects[3].1, "aio-tests-old");
+        assert_ne!(projects[3].0, repo.0);
+        assert_eq!(projects[4].1, "local");
+        assert!(projects[4].0.starts_with("path:"));
+        assert_eq!(projects[5], ("none", "No folder"));
+        assert_eq!(projects[6].1, "C:");
     }
 }

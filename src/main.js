@@ -32,6 +32,7 @@ const el = {
   dialogText: document.getElementById("dialog-text"),
   list: document.getElementById("session-list"),
   listEmpty: document.getElementById("list-empty"),
+  projectFilter: document.getElementById("project-filter"),
   refresh: document.getElementById("refresh"),
   resumeCommand: document.getElementById("resume-command"),
   search: document.getElementById("search"),
@@ -45,6 +46,8 @@ const state = {
   selectedId: null,
   selectedSession: null,
   showDone: localStorage.getItem("showDone") === "true",
+  project: localStorage.getItem("project") || "",
+  projectName: localStorage.getItem("projectName") || "",
   searchSeq: 0,
   detailSeq: 0,
   searchTimer: 0,
@@ -130,8 +133,52 @@ function formatDate(iso) {
     : "";
 }
 
-function visibleHits() {
+function doneFilteredHits() {
   return state.showDone ? state.hits : state.hits.filter((hit) => !hit.done);
+}
+
+function visibleHits() {
+  const hits = doneFilteredHits();
+  return state.project ? hits.filter((hit) => hit.project.key === state.project) : hits;
+}
+
+function setProject(key) {
+  state.project = key;
+  const match = state.hits.find((hit) => hit.project.key === key);
+  state.projectName = key ? match?.project.name || state.projectName : "";
+  localStorage.setItem("project", state.project);
+  localStorage.setItem("projectName", state.projectName);
+}
+
+function renderProjectOptions() {
+  const base = doneFilteredHits();
+  const groups = new Map();
+  for (const { project } of base) {
+    const group = groups.get(project.key) || { ...project, count: 0 };
+    group.count++;
+    groups.set(project.key, group);
+  }
+  if (state.project && !groups.has(state.project)) {
+    groups.set(state.project, { key: state.project, name: state.projectName || state.project, detail: "", count: 0 });
+  }
+  const projects = [...groups.values()].sort(
+    (a, b) =>
+      a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.detail.localeCompare(b.detail)
+  );
+  const nameCounts = new Map();
+  projects.forEach(({ name }) => nameCounts.set(name.toLowerCase(), (nameCounts.get(name.toLowerCase()) || 0) + 1));
+
+  el.projectFilter.innerHTML = [
+    `<option value="">All repositories (${base.length})</option>`,
+    ...projects.map(({ key, name, detail, count }) => {
+      const label = nameCounts.get(name.toLowerCase()) > 1 && detail ? `${name} — ${detail}` : name;
+      return `<option value="${escapeHtml(key)}" title="${escapeHtml(detail)}">${escapeHtml(label)} (${count})</option>`;
+    })
+  ].join("");
+  el.projectFilter.value = state.project;
+  el.projectFilter.classList.toggle("active", Boolean(state.project));
+  const selected = groups.get(state.project);
+  el.projectFilter.title = selected ? selected.detail || selected.name : "Filter by repository or folder";
 }
 
 function resumeCommand(session) {
@@ -139,8 +186,12 @@ function resumeCommand(session) {
 }
 
 function renderList() {
-  const hits = visibleHits();
   const terms = searchTerms();
+  if (state.project && !terms.length && state.hits.length && !state.hits.some((hit) => hit.project.key === state.project)) {
+    setProject("");
+  }
+  renderProjectOptions();
+  const hits = visibleHits();
   const total = state.hits.length;
   el.count.textContent = hits.length === total ? `${total}` : `${hits.length} of ${total}`;
 
@@ -151,6 +202,9 @@ function renderList() {
   el.list.innerHTML = hits
     .map((hit) => {
       const meta = [];
+      if (!state.project) {
+        meta.push(`<span class="repo" title="${escapeHtml(hit.project.detail)}">${escapeHtml(hit.project.name)}</span>`);
+      }
       if (hit.additions || hit.deletions) {
         meta.push(
           `<span><span class="added">+${hit.additions ?? 0}</span> <span class="deleted">-${hit.deletions ?? 0}</span></span>`
@@ -182,7 +236,7 @@ function renderList() {
     .join("");
 
   el.listEmpty.hidden = hits.length > 0;
-  el.listEmpty.textContent = terms.length ? "No sessions match your filter." : "No sessions found.";
+  el.listEmpty.textContent = terms.length || state.project ? "No sessions match your filter." : "No sessions found.";
   if (!state.selectedId) {
     showNoSelection();
   }
@@ -646,6 +700,10 @@ function bindEvents() {
     }
   });
   el.refresh.addEventListener("click", refresh);
+  el.projectFilter.addEventListener("change", () => {
+    setProject(el.projectFilter.value);
+    renderList();
+  });
   el.toggleDone.addEventListener("click", () => {
     state.showDone = !state.showDone;
     localStorage.setItem("showDone", String(state.showDone));

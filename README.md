@@ -9,6 +9,10 @@ local GitHub Copilot (CLI / VS Code agent) sessions. Styled after VS Code Dark M
 - Remembers the window size between runs and always shrinks it to fit the current screen.
 - Type-to-filter search over session titles and user/agent messages. All terms must match
   (AND), case-insensitive; matches are highlighted in the list and in the chat.
+- Repository filter next to the search box (remembered between runs). Sessions are grouped by
+  `repository` from `workspace.yaml`; sessions without one (e.g. started before the folder was a
+  git repo, or in a subfolder) join the repository whose `git_root` contains their `cwd`, and
+  otherwise fall back to their working folder.
 - Copy button on every message bubble.
 - Footer with the `copilot --resume=<id>` command (copy button), **Set as done** and **Delete**.
 - VS Code titles, `+/-` change counts and "done" state are shown when VS Code knows the session.

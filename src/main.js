@@ -217,6 +217,7 @@ function renderList() {
       meta.push(`<span>${escapeHtml(relativeTime(hit.updatedAt))}</span>`);
       const badges = [
         hit.inUse ? '<span class="badge live">In use</span>' : "",
+        hit.protection ? `<span class="badge protected" title="${escapeHtml(hit.protection)}">Protected</span>` : "",
         hit.done ? '<span class="badge">Done</span>' : ""
       ].join("");
       const snippet = hit.snippet
@@ -259,12 +260,18 @@ function updateFooter() {
   el.resumeCommand.textContent = session ? resumeCommand(session) : "No session selected";
   el.resumeCommand.title = session?.cwd ? `Run from ${session.cwd}` : "";
   el.copyResume.disabled = !session;
-  el.delete.disabled = !session || session.inUse;
-  el.delete.title = session?.inUse ? "This session is currently in use" : "Delete session";
+  el.delete.disabled = !session || session.inUse || Boolean(session.protection);
+  el.delete.title = session?.protection
+    ? `Protected: ${session.protection}`
+    : session?.inUse
+      ? "This session is currently in use"
+      : "Delete session";
   el.setDone.classList.toggle("active", Boolean(session?.done));
-  el.setDone.title = session?.done
-    ? "Done (set in VS Code)"
-    : "Set as done (only available in VS Code for now)";
+  el.setDone.title = session?.protection
+    ? `Protected: ${session.protection}`
+    : session?.done
+      ? "Done (set in VS Code)"
+      : "Set as done (only available in VS Code for now)";
 }
 
 async function runSearch({ keepSelection = true, rehighlight = true } = {}) {
@@ -641,6 +648,10 @@ async function refresh({ silent = false } = {}) {
 function openDeleteDialog() {
   const session = state.selectedSession;
   if (!session || session.inUse) {
+    return;
+  }
+  if (session.protection) {
+    showToast(`Protected: ${session.protection}`);
     return;
   }
   el.dialogText.innerHTML = `<strong>${escapeHtml(session.title)}</strong><br><code>${escapeHtml(session.id)}</code>`;

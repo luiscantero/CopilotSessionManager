@@ -78,8 +78,7 @@ fn fit_to_monitor<R: Runtime>(window: &WebviewWindow<R>) -> tauri::Result<()> {
     let max_h = area.size.height.saturating_sub(frame_h).max(1);
 
     let (width, min_w) = clamp_dimension(inner.width, (MIN_WIDTH * scale).round() as u32, max_w);
-    let (height, min_h) =
-        clamp_dimension(inner.height, (MIN_HEIGHT * scale).round() as u32, max_h);
+    let (height, min_h) = clamp_dimension(inner.height, (MIN_HEIGHT * scale).round() as u32, max_h);
 
     window.set_min_size(Some(PhysicalSize::new(min_w, min_h)))?;
     if (width, height) != (inner.width, inner.height) {

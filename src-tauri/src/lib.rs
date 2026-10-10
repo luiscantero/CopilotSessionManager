@@ -41,6 +41,8 @@ struct SessionSummary {
     deletions: Option<u64>,
     done: bool,
     in_use: bool,
+    /// Why the session must not be deleted or changed here (it belongs to another app).
+    protection: Option<String>,
 }
 
 /// Repository (or folder) a session belongs to, used to group and filter sessions.
@@ -87,6 +89,8 @@ struct ParsedEvents {
 struct Entry {
     summary: SessionSummary,
     git_root: Option<String>,
+    /// App that owns the session; such sessions are grouped by app instead of folder.
+    owner_app: Option<String>,
     title_lower: String,
     events: Arc<ParsedEvents>,
 }
@@ -118,8 +122,159 @@ struct WorkspaceMeta {
     git_root: Option<String>,
     repository: Option<String>,
     branch: Option<String>,
+    client_name: Option<String>,
     created_at: Option<String>,
     updated_at: Option<String>,
+}
+
+/// Clients whose sessions are regular user conversations (Copilot CLI and VS Code).
+const USER_CLIENTS: &[&str] = &["github/cli", "vscode-agent-host"];
+
+/// Friendly names for apps known to drive Copilot sessions in the background.
+const KNOWN_CLIENTS: &[(&str, &str)] = &[("wta", "Windows Terminal Agent")];
+
+/// Folders that identify sessions owned by other apps or by the system.
+struct ProtectedDirs {
+    /// Per-user application data (`%APPDATA%`, `~/.config`, ...); the first sub folder names
+    /// the owning app.
+    app_data: Vec<String>,
+    /// System and program folders (`C:\Windows`, `Program Files`, `/usr`, ...).
+    system: Vec<String>,
+}
+
+impl ProtectedDirs {
+    fn detect() -> Self {
+        let env_dir = |name: &str| std::env::var_os(name).map(PathBuf::from);
+        let home = home_dir();
+        let mut app_data = Vec::new();
+        let mut system = Vec::new();
+        if cfg!(windows) {
+            app_data.extend(
+                ["APPDATA", "LOCALAPPDATA"]
+                    .iter()
+                    .filter_map(|n| env_dir(n)),
+            );
+            system.extend(
+                [
+                    "SystemRoot",
+                    "windir",
+                    "ProgramFiles",
+                    "ProgramFiles(x86)",
+                    "ProgramW6432",
+                    "ProgramData",
+                ]
+                .iter()
+                .filter_map(|n| env_dir(n)),
+            );
+        } else {
+            if let Some(home) = &home {
+                if cfg!(target_os = "macos") {
+                    app_data.push(home.join("Library").join("Application Support"));
+                }
+                app_data.push(home.join(".config"));
+                app_data.push(home.join(".local").join("share"));
+            }
+            app_data.extend(
+                ["XDG_CONFIG_HOME", "XDG_DATA_HOME"]
+                    .iter()
+                    .filter_map(|n| env_dir(n)),
+            );
+            system.extend(
+                [
+                    "/usr", "/etc", "/var", "/opt", "/bin", "/sbin", "/System", "/Library",
+                ]
+                .iter()
+                .map(PathBuf::from),
+            );
+        }
+        app_data.extend(copilot_dir().ok());
+        let normalize = |dirs: Vec<PathBuf>| -> Vec<String> {
+            let mut dirs: Vec<String> = dirs
+                .iter()
+                .filter_map(|dir| dir.to_str())
+                .filter(|dir| !dir.trim().is_empty())
+                .map(normalize_path)
+                .collect();
+            dirs.sort();
+            dirs.dedup();
+            dirs
+        };
+        Self {
+            app_data: normalize(app_data),
+            system: normalize(system),
+        }
+    }
+}
+
+/// Explains why a Copilot CLI session belongs to another app, together with that app's name.
+/// Such sessions are part of the app's own state, so deleting them could break it.
+fn session_owner(
+    client_name: Option<&str>,
+    cwd: Option<&str>,
+    dirs: &ProtectedDirs,
+) -> Option<(String, String)> {
+    let client = client_name
+        .map(str::trim)
+        .filter(|client| !client.is_empty())
+        .filter(|client| {
+            !USER_CLIENTS
+                .iter()
+                .any(|user| client.eq_ignore_ascii_case(user))
+        });
+    if let Some(client) = client {
+        let lowered = client.to_ascii_lowercase();
+        let app = KNOWN_CLIENTS
+            .iter()
+            .find(|(prefix, _)| lowered.starts_with(prefix))
+            .map_or_else(|| client.to_string(), |(_, name)| (*name).to_string());
+        let reason = if app == client {
+            format!("Created by the app \"{client}\". Deleting it could break that app.")
+        } else {
+            format!("Created by {app} ({client}). Deleting it could break that app.")
+        };
+        return Some((reason, app));
+    }
+
+    let cwd = cwd.map(str::trim).filter(|cwd| !cwd.is_empty())?;
+    let path = normalize_path(cwd);
+    for root in &dirs.app_data {
+        if let Some(rest) = path_within(&path, root) {
+            // Keep the original casing: the segment right below the root names the app.
+            let depth = root.split('/').filter(|s| !s.is_empty()).count();
+            let app = cwd
+                .split(['/', '\\'])
+                .filter(|segment| !segment.is_empty())
+                .nth(depth)
+                .filter(|_| !rest.is_empty())
+                .map_or_else(|| last_segment(cwd), str::to_owned);
+            return Some((
+                format!("Its folder is inside {app}'s application data. Deleting it could break that app."),
+                app,
+            ));
+        }
+    }
+    dirs.system
+        .iter()
+        .any(|root| path_within(&path, root).is_some())
+        .then(|| {
+            (
+                format!("Started in the system folder {cwd}, typically by a background tool. Deleting it could break that tool."),
+                "System".to_string(),
+            )
+        })
+}
+
+/// Returns the remainder of a normalized `path` below the normalized `root`, if it is inside.
+fn path_within<'a>(path: &'a str, root: &str) -> Option<&'a str> {
+    if path == root {
+        return Some("");
+    }
+    let rest = path.strip_prefix(root)?;
+    if root.ends_with('/') {
+        Some(rest)
+    } else {
+        rest.strip_prefix('/')
+    }
 }
 
 struct VsCodeState {
@@ -224,6 +379,7 @@ fn read_workspace(dir: &Path) -> WorkspaceMeta {
         git_root: get("git_root"),
         repository: get("repository"),
         branch: get("branch"),
+        client_name: get("client_name"),
         created_at: get("created_at"),
         updated_at: get("updated_at"),
     }
@@ -524,6 +680,12 @@ fn assign_projects(entries: &mut [Entry]) {
         let summary = &entry.summary;
         entry.summary.project = if let Some(repository) = &summary.repository {
             repository_project(repository)
+        } else if let Some(app) = &entry.owner_app {
+            Project {
+                key: format!("app:{}", app.to_lowercase()),
+                name: app.clone(),
+                detail: summary.cwd.clone().unwrap_or_default(),
+            }
         } else if let Some(root) = entry.git_root.as_deref().or(summary.cwd.as_deref()) {
             containing_root(root).unwrap_or_else(|| folder_project(root))
         } else {
@@ -553,6 +715,7 @@ fn rebuild(index: &mut Index) -> Result<(), String> {
 
     let vscode = read_vscode_state();
     let sdk_to_vscode = refresh_vscode_links(&mut index.vscode_links);
+    let protected_dirs = ProtectedDirs::detect();
     let previous = &index.parsed;
 
     let mut entries: Vec<Entry> = dirs
@@ -586,6 +749,12 @@ fn rebuild(index: &mut Index) -> Result<(), String> {
                 .unwrap_or_else(|| id.clone());
             let title = first_line_title(&title_source);
             let in_use = is_in_use(dir);
+            let owner = session_owner(
+                meta.client_name.as_deref(),
+                meta.cwd.as_deref(),
+                &protected_dirs,
+            );
+            let (protection, owner_app) = owner.unzip();
 
             let summary = SessionSummary {
                 id: id.clone(),
@@ -607,11 +776,13 @@ fn rebuild(index: &mut Index) -> Result<(), String> {
                 deletions: vs.and_then(|s| s.deletions),
                 done: vs.is_some_and(|s| s.done),
                 in_use,
+                protection,
             };
             Some(Entry {
                 title_lower: title.to_lowercase(),
                 summary,
                 git_root: meta.git_root,
+                owner_app,
                 events,
             })
         })
@@ -724,13 +895,21 @@ async fn get_session(state: State<'_, AppState>, id: String) -> Result<SessionDe
     .await
 }
 
-fn delete_session_dir(root: &Path, id: &str) -> Result<(), String> {
+fn delete_session_dir(root: &Path, id: &str, protected_dirs: &ProtectedDirs) -> Result<(), String> {
     if !is_session_id(id) {
         return Err("Invalid session id".to_string());
     }
     let dir = root.join(id);
     if !dir.is_dir() {
         return Err(format!("Session folder {} does not exist", dir.display()));
+    }
+    let meta = read_workspace(&dir);
+    if let Some((reason, _)) = session_owner(
+        meta.client_name.as_deref(),
+        meta.cwd.as_deref(),
+        protected_dirs,
+    ) {
+        return Err(format!("This session is protected. {reason}"));
     }
     if is_in_use(&dir) {
         return Err("This session is currently in use. Close it before deleting.".to_string());
@@ -745,7 +924,7 @@ async fn delete_session(state: State<'_, AppState>, id: String) -> Result<(), St
         return Err("Invalid session id".to_string());
     }
     with_index(&state, move |index| {
-        delete_session_dir(&session_root()?, &id)?;
+        delete_session_dir(&session_root()?, &id, &ProtectedDirs::detect())?;
         index.entries.retain(|entry| entry.summary.id != id);
         index.parsed.remove(&id);
         Ok(())
@@ -820,8 +999,14 @@ mod tests {
             .filter(|entry| entry.summary.in_use)
             .map(|entry| entry.summary.id.as_str())
             .collect();
+        let protected: Vec<_> = index
+            .entries
+            .iter()
+            .filter(|entry| entry.summary.protection.is_some())
+            .map(|entry| entry.summary.project.name.as_str())
+            .collect();
         println!(
-            "sessions={} with_vscode_state={with_vscode_state} cold={cold:?} warm={warm:?} in_use={in_use:?}",
+            "sessions={} with_vscode_state={with_vscode_state} cold={cold:?} warm={warm:?} in_use={in_use:?} protected={protected:?}",
             index.entries.len()
         );
         assert!(!index.entries.is_empty());
@@ -847,18 +1032,78 @@ mod tests {
         fs::write(dir.join("events.jsonl"), "").unwrap();
         fs::write(dir.join("inuse.1234.lock"), "").unwrap();
 
-        assert!(delete_session_dir(&root, "../outside").is_err());
+        assert!(delete_session_dir(&root, "../outside", &no_dirs()).is_err());
 
         let live_hold = File::create(dir.join("inuse.1234.hold")).unwrap();
         assert!(is_in_use(&dir));
-        assert!(delete_session_dir(&root, id).is_err());
+        assert!(delete_session_dir(&root, id, &no_dirs()).is_err());
         assert!(dir.is_dir());
 
         drop(live_hold);
         assert!(!is_in_use(&dir));
-        delete_session_dir(&root, id).unwrap();
+        fs::write(
+            dir.join("workspace.yaml"),
+            "cwd: C:\\Windows\\System32\nclient_name: wta-master\n",
+        )
+        .unwrap();
+        let err = delete_session_dir(&root, id, &no_dirs()).unwrap_err();
+        assert!(err.contains("protected"), "{err}");
+        assert!(dir.is_dir());
+
+        fs::write(
+            dir.join("workspace.yaml"),
+            "cwd: C:\\Repos\\app\nclient_name: github/cli\n",
+        )
+        .unwrap();
+        delete_session_dir(&root, id, &no_dirs()).unwrap();
         assert!(!dir.exists());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    fn no_dirs() -> ProtectedDirs {
+        ProtectedDirs {
+            app_data: Vec::new(),
+            system: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn detects_sessions_owned_by_other_apps() {
+        let dirs = ProtectedDirs {
+            app_data: vec![normalize_path(r"C:\Users\me\AppData\Roaming")],
+            system: vec![normalize_path(r"C:\WINDOWS")],
+        };
+        let owner = |client, cwd| session_owner(client, cwd, &dirs).map(|(_, app)| app);
+
+        assert_eq!(
+            owner(Some("vscode-agent-host"), Some(r"C:\Repos\app")),
+            None
+        );
+        assert_eq!(owner(Some("github/cli"), Some(r"C:\Repos\app")), None);
+        assert_eq!(owner(None, Some(r"C:\Repos\app")), None);
+        assert_eq!(owner(None, None), None);
+        assert_eq!(
+            owner(Some("wta-master"), Some(r"C:\Users\me")).as_deref(),
+            Some("Windows Terminal Agent")
+        );
+        assert_eq!(owner(Some("my-tool"), None).as_deref(), Some("my-tool"));
+        if cfg!(windows) {
+            assert_eq!(
+                owner(None, Some(r"C:\Windows\system32")).as_deref(),
+                Some("System")
+            );
+            assert_eq!(
+                owner(
+                    None,
+                    Some(r"C:\Users\me\AppData\Roaming\Open Design\projects\bee7043a-0fe8-4bb2-bb5b-42a1c833ed26")
+                )
+                .as_deref(),
+                Some("Open Design")
+            );
+        }
+        // Sibling folders sharing a prefix are not protected.
+        assert_eq!(owner(None, Some(r"C:\WINDOWS-old\repo")), None);
+        assert_eq!(owner(None, Some(r"C:\Users\me\AppData\RoamingStuff")), None);
     }
 
     #[test]
@@ -940,8 +1185,10 @@ mod tests {
                 deletions: None,
                 done: false,
                 in_use: false,
+                protection: None,
             },
             git_root: git_root.map(str::to_owned),
+            owner_app: None,
             title_lower: title.to_lowercase(),
             events: Arc::new(ParsedEvents {
                 stamp: (0, None),
@@ -955,7 +1202,8 @@ mod tests {
 
     #[test]
     fn groups_sessions_by_repository_or_folder() {
-        let entry = |cwd, git_root, repository| test_entry("t", Vec::new(), cwd, git_root, repository);
+        let entry =
+            |cwd, git_root, repository| test_entry("t", Vec::new(), cwd, git_root, repository);
         let mut entries = vec![
             entry(
                 Some(r"c:\Repos\aio-tests"),
@@ -972,11 +1220,21 @@ mod tests {
             entry(Some(r"C:\Repos\local\sub"), Some(r"C:\Repos\local"), None),
             entry(None, None, None),
             entry(Some(r"C:\"), None, None),
+            // Sessions owned by another app are grouped by that app.
+            Entry {
+                owner_app: Some("Open Design".to_string()),
+                ..entry(Some(r"C:\AppData\Open Design\projects\1"), None, None)
+            },
         ];
         assign_projects(&mut entries);
         let projects: Vec<_> = entries
             .iter()
-            .map(|e| (e.summary.project.key.as_str(), e.summary.project.name.as_str()))
+            .map(|e| {
+                (
+                    e.summary.project.key.as_str(),
+                    e.summary.project.name.as_str(),
+                )
+            })
             .collect();
         let repo = ("repo:defaultcollection/one/aio-tests", "aio-tests");
         assert_eq!(projects[0], repo);
@@ -990,5 +1248,6 @@ mod tests {
         assert!(projects[4].0.starts_with("path:"));
         assert_eq!(projects[5], ("none", "No folder"));
         assert_eq!(projects[6].1, "C:");
+        assert_eq!(projects[7], ("app:open design", "Open Design"));
     }
 }

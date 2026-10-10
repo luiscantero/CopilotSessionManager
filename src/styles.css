@@ -348,6 +348,11 @@ svg {
   color: #4daafc;
 }
 
+.badge.protected {
+  border-color: #6c5a2e;
+  color: #cca700;
+}
+
 mark {
   border-radius: 2px;
   background: var(--match);

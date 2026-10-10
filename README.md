@@ -18,6 +18,14 @@ local GitHub Copilot (CLI / VS Code agent) sessions. Styled after VS Code Dark M
 - VS Code titles, `+/-` change counts and "done" state are shown when VS Code knows the session.
   Done sessions are hidden by default (toggle with the double-check button in the header).
 - Sessions open in a running Copilot process are badged **In use** and cannot be deleted.
+- Sessions owned by another app are badged **Protected**: **Delete** and **Set as done** are
+  disabled (and deletion is refused by the backend), because removing them could break that
+  app. A session counts as app-owned when `workspace.yaml` names a `client_name` other than the
+  Copilot CLI (`github/cli`) or VS Code (`vscode-agent-host`), e.g. Windows Terminal Agent
+  (`wta-master`), or when its working folder is inside application data (`%APPDATA%`,
+  `%LOCALAPPDATA%`, `~/.config`, `~/.copilot`, ...) or a system folder (`C:\Windows`,
+  `Program Files`, `/usr`, ...). Such sessions are grouped by app (for example
+  "Windows Terminal Agent" or "Open Design") instead of by folder.
 - Refreshes automatically: a file watcher on `~/.copilot/session-state` and VS Code's
   `agent-host.db` picks up new, updated and removed sessions (debounced, at most every 5 s),
   with a 45 s polling fallback (e.g. for **In use** locks released by exiting processes). The

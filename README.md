@@ -14,7 +14,8 @@ local GitHub Copilot (CLI / VS Code agent) sessions. Styled after VS Code Dark M
   git repo, or in a subfolder) join the repository whose `git_root` contains their `cwd`, and
   otherwise fall back to their working folder.
 - Copy button on every message bubble.
-- Footer with the `copilot --resume=<id>` command (copy button), **Set as done** and **Delete**.
+- Footer with the resume command (`copilot --resume=<id>`, copy button), **Set as done** and
+  **Delete**.
 - VS Code titles, `+/-` change counts and "done" state are shown when VS Code knows the session.
   Done sessions are hidden by default (toggle with the double-check button in the header).
 - Sessions open in a running Copilot process are badged **In use** and cannot be deleted.
@@ -26,10 +27,16 @@ local GitHub Copilot (CLI / VS Code agent) sessions. Styled after VS Code Dark M
   `%LOCALAPPDATA%`, `~/.config`, `~/.copilot`, ...) or a system folder (`C:\Windows`,
   `Program Files`, `/usr`, ...). Such sessions are grouped by app (for example
   "Windows Terminal Agent" or "Open Design") instead of by folder.
-- Refreshes automatically: a file watcher on `~/.copilot/session-state` and VS Code's
-  `agent-host.db` picks up new, updated and removed sessions (debounced, at most every 5 s),
-  with a 45 s polling fallback (e.g. for **In use** locks released by exiting processes). The
-  open chat keeps its scroll position, or follows new messages when scrolled to the bottom.
+- VS Code local chats (the "Local" sessions in VS Code's Chat view, stored per workspace) are
+  listed and searchable next to the Copilot CLI sessions, grouped by their workspace folder, and
+  badged **VS Code chat**. They are read-only: VS Code owns them, so **Delete** and **Set as done**
+  are disabled; the footer shows a `code "<folder>"` command to open the folder in VS Code. Chats
+  that VS Code copied into several workspace storages are shown once, under their real folder.
+- Refreshes automatically: a file watcher on `~/.copilot/session-state`, VS Code's
+  `agent-host.db` and VS Code's chat folders picks up new, updated and removed sessions
+  (debounced, at most every 5 s), with a 45 s polling fallback (e.g. for **In use** locks released
+  by exiting processes, or chats archived in VS Code). The open chat keeps its scroll position, or
+  follows new messages when scrolled to the bottom.
 
 Keyboard: `Ctrl+F` / `Ctrl+K` focus search, `Esc` clear, `Up` / `Down` move, `Enter` open,
 `Delete` delete, `F5` refresh.
@@ -43,9 +50,13 @@ Keyboard: `Ctrl+F` / `Ctrl+K` focus search, `Esc` clear, `Up` / `Down` move, `En
 | In-use detection         | `~/.copilot/session-state/<id>/inuse.<pid>.hold` (exclusively locked while live) | read      |
 | VS Code title/done/diffs | `%APPDATA%/Code/User/globalStorage/agent-host.db` (`sessions_v2`)                | read-only |
 | VS Code id -> session id | `%APPDATA%/Code/agentSessionData/<vscode-id>/session.db`                         | read-only |
+| VS Code local chats      | `%APPDATA%/Code/User/workspaceStorage/<hash>/chatSessions/<id>.json[l]`          | read-only |
+| VS Code chat folder      | `%APPDATA%/Code/User/workspaceStorage/<hash>/workspace.json`                     | read-only |
+| VS Code chat title/done  | `%APPDATA%/Code/User/workspaceStorage/<hash>/state.vscdb` (`ItemTable`)          | read-only |
+| VS Code no-folder chats  | `%APPDATA%/Code/User/globalStorage/emptyWindowChatSessions/<id>.json[l]`         | read-only |
 
-Only user prompts and top-level assistant replies are shown; tool calls, sub-agent output and
-injected system/skill messages are skipped.
+Only user prompts and top-level assistant replies are shown; tool calls, sub-agent output,
+thinking and injected system/skill messages are skipped.
 
 ## Prerequisites
 
@@ -76,3 +87,5 @@ cargo clippy --all-targets -- -D warnings
   `~/.copilot/session-store.db` and VS Code's session list are not touched and may linger until
   those tools clean them up.
 - Session paths assume the default VS Code (stable) profile location.
+- VS Code local chats cannot be deleted, archived or resumed from here; the footer command only
+  opens their folder. Chats of remote (WSL/SSH) workspaces are grouped by their remote path.

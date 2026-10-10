@@ -1,9 +1,11 @@
 //! Notifies the frontend when sessions change on disk.
 //!
-//! A native file watcher covers `~/.copilot/session-state` and VS Code's `agent-host.db`.
+//! A native file watcher covers `~/.copilot/session-state`, VS Code's `agent-host.db` and the
+//! VS Code chat session folders (`workspaceStorage/*/chatSessions`, `emptyWindowChatSessions`).
 //! Bursts of changes (an active session appends to `events.jsonl` constantly) are debounced
 //! and throttled. A slow periodic poll covers anything the watcher cannot see, such as a
-//! Copilot process exiting without removing its `inuse.<pid>.hold` lock file.
+//! Copilot process exiting without removing its `inuse.<pid>.hold` lock file, or VS Code
+//! archiving a chat (stored in its frequently written `state.vscdb`).
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
@@ -26,16 +28,20 @@ struct Targets {
     session_root: Option<PathBuf>,
     /// VS Code `User/globalStorage` folders containing `agent-host.db`.
     storage_dirs: Vec<PathBuf>,
+    /// VS Code folders holding chat session files, watched recursively.
+    chat_dirs: Vec<PathBuf>,
 }
 
 pub fn spawn<R: Runtime>(
     app: AppHandle<R>,
     session_root: Option<PathBuf>,
     storage_dirs: Vec<PathBuf>,
+    chat_dirs: Vec<PathBuf>,
 ) {
     let targets = Targets {
         session_root,
         storage_dirs,
+        chat_dirs,
     };
     let spawned = std::thread::Builder::new()
         .name("session-watcher".to_string())
@@ -95,6 +101,12 @@ fn add_watches(watcher: &mut RecommendedWatcher, targets: &Targets, watched: &mu
                 .storage_dirs
                 .iter()
                 .map(|dir| (dir, RecursiveMode::NonRecursive)),
+        )
+        .chain(
+            targets
+                .chat_dirs
+                .iter()
+                .map(|dir| (dir, RecursiveMode::Recursive)),
         );
     for (path, mode) in wanted {
         if watched.contains(path) || !path.is_dir() {
@@ -144,6 +156,13 @@ fn is_relevant_path(path: &Path, session_root: Option<&Path>) -> bool {
             _ => false,
         };
     }
+    let parent = path
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str());
+    if matches!(parent, Some("chatSessions" | "emptyWindowChatSessions")) {
+        return name.ends_with(".json") || name.ends_with(".jsonl");
+    }
     name == "agent-host.db" || name == "agent-host.db-wal"
 }
 
@@ -170,6 +189,20 @@ mod tests {
         assert!(relevant(&storage.join("agent-host.db-wal")));
         assert!(!relevant(&storage.join("agent-host.db-shm")));
         assert!(!relevant(&storage.join("state.vscdb")));
+
+        let chats = Path::new("/home/me/.config/Code/User/workspaceStorage/abc/chatSessions");
+        assert!(relevant(
+            &chats.join("24c442d3-ada5-4d9a-b945-c448f7d78023.jsonl")
+        ));
+        assert!(relevant(
+            &chats.join("24c442d3-ada5-4d9a-b945-c448f7d78023.json")
+        ));
+        assert!(!relevant(&chats.join("notes.txt")));
+        assert!(!relevant(&chats.parent().unwrap().join("state.vscdb")));
+        let empty_window = storage.join("emptyWindowChatSessions");
+        assert!(relevant(
+            &empty_window.join("24c442d3-ada5-4d9a-b945-c448f7d78023.json")
+        ));
     }
 
     #[test]

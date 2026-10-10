@@ -186,7 +186,19 @@ function renderProjectOptions() {
 }
 
 function resumeCommand(session) {
-  return `copilot --resume=${session.id}`;
+  return session.resumeCommand || "";
+}
+
+function resumeHint(session) {
+  if (!session) {
+    return "";
+  }
+  if (session.source === "vscode") {
+    return session.resumeCommand
+      ? "Opens the chat's folder in VS Code; the chat is listed in VS Code's Chat view"
+      : "This chat has no folder to open";
+  }
+  return session.cwd ? `Run from ${session.cwd}` : "";
 }
 
 function renderList() {
@@ -217,7 +229,11 @@ function renderList() {
       meta.push(`<span>${escapeHtml(relativeTime(hit.updatedAt))}</span>`);
       const badges = [
         hit.inUse ? '<span class="badge live">In use</span>' : "",
-        hit.protection ? `<span class="badge protected" title="${escapeHtml(hit.protection)}">Protected</span>` : "",
+        hit.source === "vscode"
+          ? `<span class="badge vscode" title="${escapeHtml(hit.protection ?? "")}">VS Code chat</span>`
+          : hit.protection
+            ? `<span class="badge protected" title="${escapeHtml(hit.protection)}">Protected</span>`
+            : "",
         hit.done ? '<span class="badge">Done</span>' : ""
       ].join("");
       const snippet = hit.snippet
@@ -257,9 +273,9 @@ function showNoSelection() {
 
 function updateFooter() {
   const session = state.selectedSession;
-  el.resumeCommand.textContent = session ? resumeCommand(session) : "No session selected";
-  el.resumeCommand.title = session?.cwd ? `Run from ${session.cwd}` : "";
-  el.copyResume.disabled = !session;
+  el.resumeCommand.textContent = session ? resumeCommand(session) || "No command available" : "No session selected";
+  el.resumeCommand.title = resumeHint(session);
+  el.copyResume.disabled = !session?.resumeCommand;
   el.delete.disabled = !session || session.inUse || Boolean(session.protection);
   el.delete.title = session?.protection
     ? `Protected: ${session.protection}`
@@ -765,7 +781,7 @@ function bindEvents() {
     renderList();
   });
   el.copyResume.addEventListener("click", (event) => {
-    if (state.selectedSession) {
+    if (state.selectedSession?.resumeCommand) {
       copyText(resumeCommand(state.selectedSession), event.currentTarget);
     }
   });

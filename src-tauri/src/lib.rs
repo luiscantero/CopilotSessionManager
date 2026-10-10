@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
 use tauri::{Manager, State};
 
+mod vscode_chat;
 mod watcher;
 mod window_state;
 
@@ -30,6 +31,8 @@ struct ChatMessage {
 struct SessionSummary {
     id: String,
     title: String,
+    /// "cli" for Copilot CLI / agent sessions, "vscode" for VS Code local chats.
+    source: &'static str,
     cwd: Option<String>,
     repository: Option<String>,
     branch: Option<String>,
@@ -43,6 +46,8 @@ struct SessionSummary {
     in_use: bool,
     /// Why the session must not be deleted or changed here (it belongs to another app).
     protection: Option<String>,
+    /// Command that continues the session (or opens it in its app).
+    resume_command: Option<String>,
 }
 
 /// Repository (or folder) a session belongs to, used to group and filter sessions.
@@ -86,6 +91,18 @@ struct ParsedEvents {
     last_timestamp: Option<String>,
 }
 
+impl ParsedEvents {
+    fn new(stamp: FileStamp, messages: Vec<ChatMessage>) -> Self {
+        Self {
+            stamp,
+            lowered: messages.iter().map(|m| m.content.to_lowercase()).collect(),
+            first_timestamp: messages.first().and_then(|m| m.timestamp.clone()),
+            last_timestamp: messages.last().and_then(|m| m.timestamp.clone()),
+            messages,
+        }
+    }
+}
+
 struct Entry {
     summary: SessionSummary,
     git_root: Option<String>,
@@ -99,6 +116,7 @@ struct Entry {
 struct Index {
     parsed: HashMap<String, Arc<ParsedEvents>>,
     vscode_links: HashMap<PathBuf, VsCodeLink>,
+    vscode_chats: vscode_chat::Cache,
     entries: Vec<Entry>,
 }
 
@@ -474,14 +492,7 @@ fn parse_events(path: &Path, stamp: FileStamp) -> ParsedEvents {
             });
         }
     }
-    let lowered = messages.iter().map(|m| m.content.to_lowercase()).collect();
-    ParsedEvents {
-        stamp,
-        first_timestamp: messages.first().and_then(|m| m.timestamp.clone()),
-        last_timestamp: messages.last().and_then(|m| m.timestamp.clone()),
-        messages,
-        lowered,
-    }
+    ParsedEvents::new(stamp, messages)
 }
 
 fn hold_files(dir: &Path) -> Vec<PathBuf> {
@@ -759,6 +770,7 @@ fn rebuild(index: &mut Index) -> Result<(), String> {
             let summary = SessionSummary {
                 id: id.clone(),
                 title: title.clone(),
+                source: "cli",
                 cwd: meta.cwd,
                 repository: meta.repository,
                 branch: meta.branch,
@@ -777,6 +789,7 @@ fn rebuild(index: &mut Index) -> Result<(), String> {
                 done: vs.is_some_and(|s| s.done),
                 in_use,
                 protection,
+                resume_command: Some(format!("copilot --resume={id}")),
             };
             Some(Entry {
                 title_lower: title.to_lowercase(),
@@ -788,10 +801,15 @@ fn rebuild(index: &mut Index) -> Result<(), String> {
         })
         .collect();
 
+    entries.extend(vscode_chat::index(
+        &mut index.vscode_chats,
+        &vscode_config_dirs(),
+    ));
     assign_projects(&mut entries);
     entries.sort_by(|a, b| b.summary.updated_at.cmp(&a.summary.updated_at));
     index.parsed = entries
         .iter()
+        .filter(|entry| entry.summary.source == "cli")
         .map(|entry| (entry.summary.id.clone(), entry.events.clone()))
         .collect();
     index.entries = entries;
@@ -924,6 +942,14 @@ async fn delete_session(state: State<'_, AppState>, id: String) -> Result<(), St
         return Err("Invalid session id".to_string());
     }
     with_index(&state, move |index| {
+        let protection = index
+            .entries
+            .iter()
+            .find(|entry| entry.summary.id == id)
+            .and_then(|entry| entry.summary.protection.clone());
+        if let Some(reason) = protection {
+            return Err(format!("This session is protected. {reason}"));
+        }
         delete_session_dir(&session_root()?, &id, &ProtectedDirs::detect())?;
         index.entries.retain(|entry| entry.summary.id != id);
         index.parsed.remove(&id);
@@ -950,6 +976,16 @@ pub fn run() {
                 vscode_config_dirs()
                     .into_iter()
                     .map(|dir| dir.join("User").join("globalStorage"))
+                    .collect(),
+                vscode_config_dirs()
+                    .into_iter()
+                    .flat_map(|dir| {
+                        let user = dir.join("User");
+                        [
+                            user.join("workspaceStorage"),
+                            user.join("globalStorage").join("emptyWindowChatSessions"),
+                        ]
+                    })
                     .collect(),
             );
             Ok(())
@@ -1002,12 +1038,21 @@ mod tests {
         let protected: Vec<_> = index
             .entries
             .iter()
-            .filter(|entry| entry.summary.protection.is_some())
+            .filter(|entry| entry.summary.protection.is_some() && entry.summary.source == "cli")
             .map(|entry| entry.summary.project.name.as_str())
             .collect();
+        let mut projects: HashMap<(&str, &str), usize> = HashMap::new();
+        for entry in &index.entries {
+            *projects
+                .entry((entry.summary.project.name.as_str(), entry.summary.source))
+                .or_default() += 1;
+        }
+        let mut projects: Vec<_> = projects.into_iter().collect();
+        projects.sort();
         println!(
-            "sessions={} with_vscode_state={with_vscode_state} cold={cold:?} warm={warm:?} in_use={in_use:?} protected={protected:?}",
-            index.entries.len()
+            "sessions={} vscode_chats={} with_vscode_state={with_vscode_state} cold={cold:?} warm={warm:?} in_use={in_use:?} protected_cli={protected:?}\nprojects={projects:?}",
+            index.entries.len(),
+            index.entries.iter().filter(|entry| entry.summary.source == "vscode").count()
         );
         assert!(!index.entries.is_empty());
     }
@@ -1174,6 +1219,7 @@ mod tests {
             summary: SessionSummary {
                 id: "24c442d3-ada5-4d9a-b945-c448f7d78023".to_string(),
                 title: title.to_string(),
+                source: "cli",
                 cwd: cwd.map(str::to_owned),
                 repository: repository.map(str::to_owned),
                 branch: None,
@@ -1186,6 +1232,7 @@ mod tests {
                 done: false,
                 in_use: false,
                 protection: None,
+                resume_command: None,
             },
             git_root: git_root.map(str::to_owned),
             owner_app: None,

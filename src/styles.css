@@ -353,6 +353,11 @@ svg {
   color: #cca700;
 }
 
+.badge.vscode {
+  border-color: #3b4e6b;
+  color: #75beff;
+}
+
 mark {
   border-radius: 2px;
   background: var(--match);

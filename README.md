@@ -13,6 +13,13 @@ local GitHub Copilot (CLI / VS Code agent) sessions. Styled after VS Code Dark M
   `repository` from `workspace.yaml`; sessions without one (e.g. started before the folder was a
   git repo, or in a subfolder) join the repository whose `git_root` contains their `cwd`, and
   otherwise fall back to their working folder.
+- Merge projects that were renamed or moved (e.g. ShotNotebook -> ShotGallery -> ShotCollector):
+  select the old project in the repository filter, click the merge button next to it and choose
+  the new project. Its sessions are then grouped under the new name; chains resolve to the newest
+  project, and merges can be undone from the same dialog. Projects whose folder no longer exists
+  are marked "folder missing" as merge candidates. Merges only affect grouping in this app and are
+  saved in `project-merges.json` in the app's config folder
+  (`%APPDATA%/com.lcantero.copilot-session-search` on Windows).
 - Copy button on every message bubble.
 - Footer with the resume command (`copilot --resume=<id>`, copy button), **Set as done** and
   **Delete**.

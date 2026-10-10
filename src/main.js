@@ -7,6 +7,7 @@ const ICONS = {
   checkAll: '<svg viewBox="0 0 16 16"><path d="M1.5 8.5l3 3 7-7M7.4 11.1l.9.9 6.2-6.2"/></svg>',
   close: '<svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
   copilot: '<svg viewBox="0 0 16 16"><path d="M4 6.2C4 4.4 5.4 3 7.2 3h1.6C10.6 3 12 4.4 12 6.2v3.6c0 1.8-1.4 3.2-3.2 3.2H7.2C5.4 13 4 11.6 4 9.8z"/><path d="M2 8h2M12 8h2M6.5 7.5v1M9.5 7.5v1"/></svg>',
+  merge: '<svg viewBox="0 0 16 16"><path d="M4.5 2v3c0 2.5 3.5 3 3.5 5.5V14M11.5 2v3c0 2.5-3.5 3-3.5 5.5M6 12.5l2 2 2-2"/></svg>',
   copy: '<svg viewBox="0 0 16 16"><path d="M3.5 10.5V3.2c0-.4.3-.7.7-.7h6.3"/><rect x="5.5" y="4.5" width="7" height="9" rx=".8"/></svg>',
   refresh: '<svg viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v3h-3"/></svg>',
   search: '<svg viewBox="0 0 16 16"><circle cx="6.8" cy="6.8" r="4.3"/><path d="M10 10l4 4"/></svg>',
@@ -32,6 +33,14 @@ const el = {
   dialogText: document.getElementById("dialog-text"),
   list: document.getElementById("session-list"),
   listEmpty: document.getElementById("list-empty"),
+  mergeButton: document.getElementById("merge-project"),
+  mergeCancel: document.getElementById("merge-cancel"),
+  mergeConfirm: document.getElementById("merge-confirm"),
+  mergeDialog: document.getElementById("merge-backdrop"),
+  mergedList: document.getElementById("merged-list"),
+  mergedSection: document.getElementById("merged-section"),
+  mergeTarget: document.getElementById("merge-target"),
+  mergeText: document.getElementById("merge-text"),
   projectFilter: document.getElementById("project-filter"),
   refresh: document.getElementById("refresh"),
   resumeCommand: document.getElementById("resume-command"),
@@ -174,15 +183,35 @@ function renderProjectOptions() {
 
   el.projectFilter.innerHTML = [
     `<option value="">All repositories (${base.length})</option>`,
-    ...projects.map(({ key, name, detail, count }) => {
+    ...projects.map(({ key, name, detail, count, missing, merged }) => {
       const label = nameCounts.get(name.toLowerCase()) > 1 && detail ? `${name} — ${detail}` : name;
-      return `<option value="${escapeHtml(key)}" title="${escapeHtml(detail)}">${escapeHtml(label)} (${count})</option>`;
+      const notes = [missing ? "folder missing" : "", merged?.length ? `+${merged.length} merged` : ""].filter(Boolean);
+      const suffix = notes.length ? ` · ${notes.join(" · ")}` : "";
+      return `<option value="${escapeHtml(key)}" title="${escapeHtml(projectTooltip({ detail, missing, merged }))}">${escapeHtml(label)} (${count})${escapeHtml(suffix)}</option>`;
     })
   ].join("");
   el.projectFilter.value = state.project;
   el.projectFilter.classList.toggle("active", Boolean(state.project));
   const selected = groups.get(state.project);
-  el.projectFilter.title = selected ? selected.detail || selected.name : "Filter by repository or folder";
+  el.projectFilter.title = selected ? projectTooltip(selected) || selected.name : "Filter by repository or folder";
+  el.mergeButton.disabled = !isMergeable(state.project);
+  el.mergeButton.title = isMergeable(state.project)
+    ? "Merge this project into another (renamed or moved repository)"
+    : "Select a repository or folder to merge it into another";
+}
+
+function isMergeable(key) {
+  return key.startsWith("repo:") || key.startsWith("path:");
+}
+
+function projectTooltip({ detail, missing, merged }) {
+  return [
+    detail,
+    missing ? "Folder no longer exists (renamed or moved?). Use the merge button to group it with the new project." : "",
+    merged?.length ? `Includes: ${merged.map((project) => project.name).join(", ")}` : ""
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function resumeCommand(session) {
@@ -679,6 +708,93 @@ function closeDeleteDialog() {
   el.dialog.hidden = true;
 }
 
+async function openMergeDialog() {
+  if (!isMergeable(state.project)) {
+    return;
+  }
+  let projects;
+  try {
+    projects = await invoke("list_projects");
+  } catch (error) {
+    showToast(`Unable to load projects: ${error}`, true);
+    return;
+  }
+  const source = projects.find((project) => project.key === state.project);
+  if (!source) {
+    showToast("This project has no sessions any more.");
+    return;
+  }
+  el.mergeText.innerHTML = [
+    `Group the sessions of <strong>${escapeHtml(source.name)}</strong>`,
+    source.detail ? ` <span class="merged-detail">(${escapeHtml(source.detail)})</span>` : "",
+    " under another project, for example after the repository was renamed or moved.",
+    source.missing ? "<br>Its folder no longer exists." : ""
+  ].join("");
+
+  // Projects with an existing folder first, most recently used first: the likely new name.
+  const targets = projects
+    .filter((project) => project.key !== source.key && isMergeable(project.key))
+    .sort((a, b) => Number(a.missing) - Number(b.missing) || (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+  el.mergeTarget.innerHTML = [
+    '<option value="">Choose a project…</option>',
+    ...targets.map((project) => {
+      const notes = [`${project.sessions}`, project.missing ? "folder missing" : "", relativeTime(project.updatedAt)].filter(Boolean);
+      return `<option value="${escapeHtml(project.key)}" title="${escapeHtml(project.detail)}">${escapeHtml(project.name)} (${escapeHtml(notes.join(" · "))})</option>`;
+    })
+  ].join("");
+  el.mergeTarget.disabled = !targets.length;
+  el.mergeConfirm.disabled = true;
+
+  el.mergedSection.hidden = !source.merged.length;
+  el.mergedList.innerHTML = source.merged
+    .map(
+      (project) => `<li>
+        <span class="merged-name" title="${escapeHtml(project.detail)}">${escapeHtml(project.name)}
+          <span class="merged-detail">${escapeHtml(project.detail)}</span></span>
+        <button class="button secondary" type="button" data-key="${escapeHtml(project.key)}">Unmerge</button>
+      </li>`
+    )
+    .join("");
+
+  el.mergeDialog.hidden = false;
+  el.mergeTarget.focus();
+}
+
+function closeMergeDialog() {
+  el.mergeDialog.hidden = true;
+}
+
+async function mergeSelectedProject() {
+  const into = el.mergeTarget.value;
+  if (!into || !state.project) {
+    return;
+  }
+  el.mergeConfirm.disabled = true;
+  try {
+    const key = await invoke("merge_project", { from: state.project, into });
+    setProject(key);
+    closeMergeDialog();
+    await runSearch();
+    showToast("Projects merged");
+  } catch (error) {
+    showToast(`Merge failed: ${error}`, true);
+    el.mergeConfirm.disabled = false;
+  }
+}
+
+async function unmergeProject(key, button) {
+  button.disabled = true;
+  try {
+    await invoke("unmerge_project", { key });
+    await runSearch();
+    showToast("Project unmerged");
+    await openMergeDialog();
+  } catch (error) {
+    showToast(`Unmerge failed: ${error}`, true);
+    button.disabled = false;
+  }
+}
+
 async function deleteSelected() {
   const session = state.selectedSession;
   if (!session) {
@@ -786,6 +902,23 @@ function bindEvents() {
     }
   });
   el.delete.addEventListener("click", openDeleteDialog);
+  el.mergeButton.addEventListener("click", openMergeDialog);
+  el.mergeCancel.addEventListener("click", closeMergeDialog);
+  el.mergeConfirm.addEventListener("click", mergeSelectedProject);
+  el.mergeTarget.addEventListener("change", () => {
+    el.mergeConfirm.disabled = !el.mergeTarget.value;
+  });
+  el.mergedList.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-key]");
+    if (button) {
+      unmergeProject(button.dataset.key, button);
+    }
+  });
+  el.mergeDialog.addEventListener("click", (event) => {
+    if (event.target === el.mergeDialog) {
+      closeMergeDialog();
+    }
+  });
   el.dialogCancel.addEventListener("click", closeDeleteDialog);
   el.dialogConfirm.addEventListener("click", deleteSelected);
   el.dialog.addEventListener("click", (event) => {
@@ -796,6 +929,8 @@ function bindEvents() {
   document.addEventListener("keydown", (event) => {
     if (!el.dialog.hidden && event.key === "Escape") {
       closeDeleteDialog();
+    } else if (!el.mergeDialog.hidden && event.key === "Escape") {
+      closeMergeDialog();
     } else if ((event.ctrlKey || event.metaKey) && ["f", "k"].includes(event.key.toLowerCase())) {
       event.preventDefault();
       el.search.focus();

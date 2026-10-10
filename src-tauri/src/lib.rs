@@ -8,8 +8,9 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
-use tauri::{Manager, State};
+use tauri::{AppHandle, Manager, Runtime, State};
 
+mod project_merges;
 mod vscode_chat;
 mod watcher;
 mod window_state;
@@ -58,6 +59,20 @@ struct Project {
     name: String,
     /// Full repository name or folder path.
     detail: String,
+    /// No session of this repository/folder group has an existing folder any more (it was
+    /// probably renamed or moved), so it is a candidate for merging into the new project.
+    missing: bool,
+    /// Projects merged into this one.
+    merged: Vec<project_merges::ProjectRef>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectInfo {
+    #[serde(flatten)]
+    project: Project,
+    sessions: usize,
+    updated_at: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -105,6 +120,8 @@ impl ParsedEvents {
 
 struct Entry {
     summary: SessionSummary,
+    /// Project from the session's own repository/folder, before user-defined merges.
+    base_project: Project,
     git_root: Option<String>,
     /// App that owns the session; such sessions are grouped by app instead of folder.
     owner_app: Option<String>,
@@ -117,6 +134,7 @@ struct Index {
     parsed: HashMap<String, Arc<ParsedEvents>>,
     vscode_links: HashMap<PathBuf, VsCodeLink>,
     vscode_chats: vscode_chat::Cache,
+    merges: project_merges::Merges,
     entries: Vec<Entry>,
 }
 
@@ -642,6 +660,7 @@ fn repository_project(repository: &str) -> Project {
         key: format!("repo:{}", repository.trim().to_lowercase()),
         name: last_segment(repository),
         detail: repository.trim().to_string(),
+        ..Project::default()
     }
 }
 
@@ -650,6 +669,7 @@ fn folder_project(path: &str) -> Project {
         key: format!("path:{}", normalize_path(path)),
         name: last_segment(path),
         detail: path.trim().to_string(),
+        ..Project::default()
     }
 }
 
@@ -689,13 +709,14 @@ fn assign_projects(entries: &mut [Entry]) {
 
     for entry in entries.iter_mut() {
         let summary = &entry.summary;
-        entry.summary.project = if let Some(repository) = &summary.repository {
+        let project = if let Some(repository) = &summary.repository {
             repository_project(repository)
         } else if let Some(app) = &entry.owner_app {
             Project {
                 key: format!("app:{}", app.to_lowercase()),
                 name: app.clone(),
                 detail: summary.cwd.clone().unwrap_or_default(),
+                ..Project::default()
             }
         } else if let Some(root) = entry.git_root.as_deref().or(summary.cwd.as_deref()) {
             containing_root(root).unwrap_or_else(|| folder_project(root))
@@ -703,9 +724,11 @@ fn assign_projects(entries: &mut [Entry]) {
             Project {
                 key: "none".to_string(),
                 name: "No folder".to_string(),
-                detail: String::new(),
+                ..Project::default()
             }
         };
+        entry.summary.project = project.clone();
+        entry.base_project = project;
     }
 }
 
@@ -794,6 +817,7 @@ fn rebuild(index: &mut Index) -> Result<(), String> {
             Some(Entry {
                 title_lower: title.to_lowercase(),
                 summary,
+                base_project: Project::default(),
                 git_root: meta.git_root,
                 owner_app,
                 events,
@@ -806,6 +830,7 @@ fn rebuild(index: &mut Index) -> Result<(), String> {
         &vscode_config_dirs(),
     ));
     assign_projects(&mut entries);
+    project_merges::apply(&mut entries, &index.merges);
     entries.sort_by(|a, b| b.summary.updated_at.cmp(&a.summary.updated_at));
     index.parsed = entries
         .iter()
@@ -958,12 +983,111 @@ async fn delete_session(state: State<'_, AppState>, id: String) -> Result<(), St
     .await
 }
 
+fn merges_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    app.path()
+        .app_config_dir()
+        .map(|dir| dir.join(project_merges::FILE_NAME))
+        .map_err(|err| format!("Unable to locate the config folder: {err}"))
+}
+
+fn project_ref(project: &Project) -> project_merges::ProjectRef {
+    project_merges::ProjectRef {
+        key: project.key.clone(),
+        name: project.name.clone(),
+        detail: project.detail.clone(),
+    }
+}
+
+fn list_project_infos(index: &Index) -> Vec<ProjectInfo> {
+    let mut projects: HashMap<&str, ProjectInfo> = HashMap::new();
+    for entry in &index.entries {
+        let project = &entry.summary.project;
+        let info = projects
+            .entry(project.key.as_str())
+            .or_insert_with(|| ProjectInfo {
+                project: project.clone(),
+                sessions: 0,
+                updated_at: None,
+            });
+        info.sessions += 1;
+        if entry.summary.updated_at > info.updated_at {
+            info.updated_at = entry.summary.updated_at.clone();
+        }
+    }
+    let mut projects: Vec<ProjectInfo> = projects.into_values().collect();
+    projects.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    projects
+}
+
+#[tauri::command]
+async fn list_projects(state: State<'_, AppState>) -> Result<Vec<ProjectInfo>, String> {
+    with_index(&state, |index| Ok(list_project_infos(index))).await
+}
+
+/// Groups the sessions of project `from` under project `into` (both current group keys).
+/// Returns the key of the resulting group.
+#[tauri::command]
+async fn merge_project(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    from: String,
+    into: String,
+) -> Result<String, String> {
+    let path = merges_path(&app)?;
+    with_index(&state, move |index| {
+        let find = |key: &str| {
+            index
+                .entries
+                .iter()
+                .map(|entry| &entry.summary.project)
+                .find(|project| project.key == key)
+                .map(project_ref)
+                .ok_or_else(|| format!("Project {key} was not found"))
+        };
+        let (from, into) = (find(&from)?, find(&into)?);
+        if from.key == into.key {
+            return Err("Choose a different project to merge into".to_string());
+        }
+        let mut merges = index.merges.clone();
+        merges.add(from, into.clone())?;
+        merges.save(&path)?;
+        index.merges = merges;
+        project_merges::apply(&mut index.entries, &index.merges);
+        Ok(into.key)
+    })
+    .await
+}
+
+/// Undoes the merge of project `key` (it becomes its own group again).
+#[tauri::command]
+async fn unmerge_project(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    key: String,
+) -> Result<(), String> {
+    let path = merges_path(&app)?;
+    with_index(&state, move |index| {
+        let mut merges = index.merges.clone();
+        if !merges.remove(&key) {
+            return Err(format!("Project {key} is not merged"));
+        }
+        merges.save(&path)?;
+        index.merges = merges;
+        project_merges::apply(&mut index.entries, &index.merges);
+        Ok(())
+    })
+    .await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
         .manage(window_state::WindowSizeState::default())
         .setup(|app| {
+            if let Ok(path) = merges_path(app.handle()) {
+                lock(&app.state::<AppState>().index).merges = project_merges::Merges::load(&path);
+            }
             if let Some(window) = app.get_webview_window("main") {
                 if let Err(err) = window_state::restore(&window) {
                     eprintln!("Unable to restore window size: {err}");
@@ -995,7 +1119,10 @@ pub fn run() {
             refresh_sessions,
             search_sessions,
             get_session,
-            delete_session
+            delete_session,
+            list_projects,
+            merge_project,
+            unmerge_project
         ])
         .run(tauri::generate_context!())
         .expect("error while running Copilot Session Search");
@@ -1049,6 +1176,15 @@ mod tests {
         }
         let mut projects: Vec<_> = projects.into_iter().collect();
         projects.sort();
+        let mut missing: Vec<_> = index
+            .entries
+            .iter()
+            .filter(|entry| entry.summary.project.missing)
+            .map(|entry| entry.summary.project.detail.as_str())
+            .collect();
+        missing.sort();
+        missing.dedup();
+        println!("missing_folders={missing:?}");
         println!(
             "sessions={} vscode_chats={} with_vscode_state={with_vscode_state} cold={cold:?} warm={warm:?} in_use={in_use:?} protected_cli={protected:?}\nprojects={projects:?}",
             index.entries.len(),
@@ -1234,6 +1370,7 @@ mod tests {
                 protection: None,
                 resume_command: None,
             },
+            base_project: Project::default(),
             git_root: git_root.map(str::to_owned),
             owner_app: None,
             title_lower: title.to_lowercase(),
@@ -1296,5 +1433,75 @@ mod tests {
         assert_eq!(projects[5], ("none", "No folder"));
         assert_eq!(projects[6].1, "C:");
         assert_eq!(projects[7], ("app:open design", "Open Design"));
+    }
+
+    #[test]
+    fn merges_renamed_projects_and_flags_missing_folders() {
+        let current = std::env::temp_dir().join(format!(
+            "copilot-session-search-merge-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&current).unwrap();
+        let current_path = current.to_str().unwrap();
+        let gone = |name: &str| current.join("gone").join(name);
+        let notebook = gone("ShotNotebook");
+        let gallery = gone("ShotGallery");
+        let entry =
+            |cwd, git_root, repository| test_entry("t", Vec::new(), cwd, git_root, repository);
+        let mut entries = vec![
+            entry(notebook.to_str(), notebook.to_str(), None),
+            entry(gallery.to_str(), gallery.to_str(), Some("me/ShotGallery")),
+            entry(gallery.to_str(), None, None),
+            entry(
+                Some(current_path),
+                Some(current_path),
+                Some("me/ShotCollector"),
+            ),
+            entry(None, None, None),
+        ];
+        assign_projects(&mut entries);
+        project_merges::apply(&mut entries, &project_merges::Merges::default());
+        let summary = |entries: &[Entry]| -> Vec<(String, bool, usize)> {
+            entries
+                .iter()
+                .map(|e| {
+                    let p = &e.summary.project;
+                    (p.name.clone(), p.missing, p.merged.len())
+                })
+                .collect()
+        };
+        assert_eq!(
+            summary(&entries),
+            [
+                ("ShotNotebook".into(), true, 0),
+                ("ShotGallery".into(), true, 0),
+                ("ShotGallery".into(), true, 0),
+                ("ShotCollector".into(), false, 0),
+                ("No folder".into(), false, 0),
+            ]
+        );
+
+        let refs: Vec<_> = entries
+            .iter()
+            .map(|e| project_ref(&e.summary.project))
+            .collect();
+        let mut merges = project_merges::Merges::default();
+        merges.add(refs[0].clone(), refs[1].clone()).unwrap();
+        merges.add(refs[1].clone(), refs[3].clone()).unwrap();
+        project_merges::apply(&mut entries, &merges);
+        let collector = entries[3].summary.project.clone();
+        assert!(entries[..4].iter().all(|e| e.summary.project == collector));
+        let merged: Vec<_> = collector.merged.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(merged, ["ShotGallery", "ShotNotebook"]);
+        assert!(!collector.missing);
+        assert_eq!(entries[4].summary.project.key, "none");
+
+        // Undoing the middle merge keeps ShotNotebook under ShotGallery.
+        merges.remove(&refs[1].key);
+        project_merges::apply(&mut entries, &merges);
+        assert_eq!(entries[0].summary.project.name, "ShotGallery");
+        assert!(entries[0].summary.project.missing);
+        assert_eq!(entries[3].summary.project.merged, []);
+        fs::remove_dir_all(&current).unwrap();
     }
 }

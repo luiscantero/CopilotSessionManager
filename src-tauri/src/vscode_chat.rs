@@ -158,6 +158,7 @@ fn build_entry(file: &ChatFile, chat: &ParsedChat, meta: &ChatMeta) -> Entry {
     let workspace = &file.workspace;
     Entry {
         title_lower: title.to_lowercase(),
+        base_project: Project::default(),
         summary: SessionSummary {
             id: file.id.clone(),
             title,

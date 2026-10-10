@@ -51,7 +51,11 @@ const state = {
   searchSeq: 0,
   detailSeq: 0,
   searchTimer: 0,
-  toastTimer: 0
+  toastTimer: 0,
+  refreshing: false,
+  refreshPending: false,
+  chatSessionId: null,
+  chatMessageCount: 0
 };
 
 function icon(name) {
@@ -244,6 +248,7 @@ function renderList() {
 
 function showNoSelection() {
   state.selectedSession = null;
+  state.chatSessionId = null;
   el.chatHeader.hidden = true;
   el.chat.innerHTML = '<div class="empty">Select a session to view the conversation.</div>';
   updateFooter();
@@ -262,7 +267,7 @@ function updateFooter() {
     : "Set as done (only available in VS Code for now)";
 }
 
-async function runSearch({ keepSelection = true } = {}) {
+async function runSearch({ keepSelection = true, rehighlight = true } = {}) {
   const seq = ++state.searchSeq;
   try {
     const hits = await invoke("search_sessions", { query: el.search.value });
@@ -275,7 +280,7 @@ async function runSearch({ keepSelection = true } = {}) {
       state.selectedId = null;
     }
     renderList();
-    if (state.selectedId && state.selectedId === previous) {
+    if (rehighlight && state.selectedId && state.selectedId === previous) {
       highlightChat();
     }
   } catch (error) {
@@ -289,7 +294,7 @@ function scheduleSearch() {
   state.searchTimer = setTimeout(() => runSearch(), 90);
 }
 
-async function selectSession(id, { focusList = false } = {}) {
+async function selectSession(id, { focusList = false, silent = false } = {}) {
   if (!id) {
     return;
   }
@@ -298,7 +303,7 @@ async function selectSession(id, { focusList = false } = {}) {
     const selected = item.dataset.id === id;
     item.classList.toggle("selected", selected);
     item.setAttribute("aria-selected", String(selected));
-    if (selected) {
+    if (selected && !silent) {
       item.scrollIntoView({ block: "nearest" });
     }
   });
@@ -313,14 +318,20 @@ async function selectSession(id, { focusList = false } = {}) {
       return;
     }
     state.selectedSession = detail.session;
-    renderChat(detail);
+    if (silent && state.chatSessionId === id && state.chatMessageCount === detail.messages.length) {
+      renderChatHeader(detail);
+    } else {
+      renderChat(detail, { preserveScroll: silent && state.chatSessionId === id });
+    }
     updateFooter();
   } catch (error) {
-    showToast(`Unable to open session: ${error}`, true);
+    if (!silent) {
+      showToast(`Unable to open session: ${error}`, true);
+    }
   }
 }
 
-function renderChat(detail) {
+function renderChatHeader(detail) {
   const { session, messages } = detail;
   el.chatHeader.hidden = false;
   el.chatTitle.textContent = session.title;
@@ -329,7 +340,16 @@ function renderChat(detail) {
     .map(escapeHtml);
   el.chatMeta.innerHTML = meta.join(" · ");
   el.chatMeta.title = `${session.id}${session.cwd ? `\n${session.cwd}` : ""}`;
+}
 
+// With preserveScroll the reader keeps their position, or stays pinned to the newest message.
+function renderChat(detail, { preserveScroll = false } = {}) {
+  const { session, messages } = detail;
+  const previousTop = el.chat.scrollTop;
+  const wasAtBottom = el.chat.scrollHeight - previousTop - el.chat.clientHeight < 40;
+  renderChatHeader(detail);
+  state.chatSessionId = session.id;
+  state.chatMessageCount = messages.length;
   const fragment = document.createDocumentFragment();
   messages.forEach((message, index) => {
     const article = document.createElement("article");
@@ -349,11 +369,16 @@ function renderChat(detail) {
     fragment.appendChild(article);
   });
   el.chat.replaceChildren(fragment);
-  el.chat.scrollTop = 0;
-  highlightChat();
+  if (preserveScroll) {
+    highlightChat({ scroll: false });
+    el.chat.scrollTop = wasAtBottom ? el.chat.scrollHeight : previousTop;
+  } else {
+    el.chat.scrollTop = 0;
+    highlightChat();
+  }
 }
 
-function highlightChat() {
+function highlightChat({ scroll = true } = {}) {
   el.chat.querySelectorAll("mark").forEach((mark) => {
     mark.replaceWith(document.createTextNode(mark.textContent));
   });
@@ -393,7 +418,9 @@ function highlightChat() {
     });
     node.replaceWith(fragment);
   });
-  el.chat.querySelector("mark")?.scrollIntoView({ block: "center" });
+  if (scroll) {
+    el.chat.querySelector("mark")?.scrollIntoView({ block: "center" });
+  }
 }
 
 function inlineMarkdown(text) {
@@ -575,24 +602,39 @@ function showToast(message, isError = false) {
   }, isError ? 5000 : 2200);
 }
 
-async function refresh() {
-  el.refresh.disabled = true;
-  if (!state.hits.length) {
+// Silent refreshes come from the backend watcher and must not disturb the user.
+async function refresh({ silent = false } = {}) {
+  if (state.refreshing) {
+    state.refreshPending = true;
+    return;
+  }
+  state.refreshing = true;
+  el.refresh.disabled = !silent;
+  if (!state.hits.length && !silent) {
     el.listEmpty.hidden = false;
     el.listEmpty.textContent = "Indexing sessions…";
   }
   try {
     await invoke("refresh_sessions");
-    await runSearch();
+    await runSearch({ rehighlight: !silent });
     if (state.selectedId) {
-      await selectSession(state.selectedId);
+      await selectSession(state.selectedId, { silent });
     }
   } catch (error) {
-    el.listEmpty.hidden = false;
-    el.listEmpty.textContent = "Unable to load sessions.";
-    showToast(`Refresh failed: ${error}`, true);
+    if (silent) {
+      console.warn("Automatic refresh failed", error);
+    } else {
+      el.listEmpty.hidden = false;
+      el.listEmpty.textContent = "Unable to load sessions.";
+      showToast(`Refresh failed: ${error}`, true);
+    }
   } finally {
+    state.refreshing = false;
     el.refresh.disabled = false;
+    if (state.refreshPending) {
+      state.refreshPending = false;
+      refresh({ silent: true });
+    }
   }
 }
 
@@ -699,7 +741,7 @@ function bindEvents() {
       openDeleteDialog();
     }
   });
-  el.refresh.addEventListener("click", refresh);
+  el.refresh.addEventListener("click", () => refresh());
   el.projectFilter.addEventListener("change", () => {
     setProject(el.projectFilter.value);
     renderList();
@@ -750,6 +792,7 @@ function init() {
     return;
   }
   refresh();
+  window.__TAURI__.event?.listen("sessions-changed", () => refresh({ silent: true }));
   el.search.focus();
 }
 

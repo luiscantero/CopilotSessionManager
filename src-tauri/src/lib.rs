@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
 use tauri::{Manager, State};
 
+mod watcher;
 mod window_state;
 
 const TITLE_MAX_CHARS: usize = 200;
@@ -764,6 +765,14 @@ pub fn run() {
                     window.show()?;
                 }
             }
+            watcher::spawn(
+                app.handle().clone(),
+                session_root().ok(),
+                vscode_config_dirs()
+                    .into_iter()
+                    .map(|dir| dir.join("User").join("globalStorage"))
+                    .collect(),
+            );
             Ok(())
         })
         .on_window_event(window_state::handle_event)

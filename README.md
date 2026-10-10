@@ -18,6 +18,10 @@ local GitHub Copilot (CLI / VS Code agent) sessions. Styled after VS Code Dark M
 - VS Code titles, `+/-` change counts and "done" state are shown when VS Code knows the session.
   Done sessions are hidden by default (toggle with the double-check button in the header).
 - Sessions open in a running Copilot process are badged **In use** and cannot be deleted.
+- Refreshes automatically: a file watcher on `~/.copilot/session-state` and VS Code's
+  `agent-host.db` picks up new, updated and removed sessions (debounced, at most every 5 s),
+  with a 45 s polling fallback (e.g. for **In use** locks released by exiting processes). The
+  open chat keeps its scroll position, or follows new messages when scrolled to the bottom.
 
 Keyboard: `Ctrl+F` / `Ctrl+K` focus search, `Esc` clear, `Up` / `Down` move, `Enter` open,
 `Delete` delete, `F5` refresh.

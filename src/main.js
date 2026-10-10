@@ -857,10 +857,12 @@ async function openMergeDialog() {
     source.missing ? `<br>${tHtml("merge.folderGone")}` : ""
   ].join("");
 
-  // Projects with an existing folder first, most recently used first: the likely new name.
   const targets = projects
     .filter((project) => project.key !== source.key && isMergeable(project.key))
-    .sort((a, b) => Number(a.missing) - Number(b.missing) || (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+    .sort(
+      (a, b) =>
+        a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || (a.detail || "").localeCompare(b.detail || "")
+    );
   el.mergeTarget.innerHTML = [
     `<option value="">${escapeHtml(t("merge.choose"))}</option>`,
     ...targets.map((project) => {

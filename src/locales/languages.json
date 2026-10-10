@@ -1,10 +1,10 @@
 [
-  { "code": "en-us", "name": "English (United States)" },
+  { "code": "en-us", "name": "English" },
   { "code": "de-de", "name": "Deutsch" },
   { "code": "fr-fr", "name": "Français" },
   { "code": "es-es", "name": "Español" },
   { "code": "it-it", "name": "Italiano" },
-  { "code": "pt-br", "name": "Português (Brasil)" },
+  { "code": "pt-br", "name": "Português" },
   { "code": "sv-se", "name": "Svenska" },
   { "code": "zh-cn", "name": "中文（简体）" },
   { "code": "ja-jp", "name": "日本語" },

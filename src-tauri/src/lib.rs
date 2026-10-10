@@ -45,6 +45,9 @@ struct SessionSummary {
     deletions: Option<u64>,
     done: bool,
     in_use: bool,
+    /// VS Code chat whose workspace is open in a running VS Code window, which would write the
+    /// chat back if it were deleted now.
+    window_open: bool,
     /// Why the session must not be deleted or changed here (it belongs to another app).
     protection: Option<String>,
     /// Command that continues the session (or opens it in its app).
@@ -811,6 +814,7 @@ fn rebuild(index: &mut Index) -> Result<(), String> {
                 deletions: vs.and_then(|s| s.deletions),
                 done: vs.is_some_and(|s| s.done),
                 in_use,
+                window_open: false,
                 protection,
                 resume_command: Some(format!("copilot --resume={id}")),
             };
@@ -967,17 +971,20 @@ async fn delete_session(state: State<'_, AppState>, id: String) -> Result<(), St
         return Err("Invalid session id".to_string());
     }
     with_index(&state, move |index| {
-        let protection = index
-            .entries
-            .iter()
-            .find(|entry| entry.summary.id == id)
-            .and_then(|entry| entry.summary.protection.clone());
-        if let Some(reason) = protection {
+        let entry = index.entries.iter().find(|entry| entry.summary.id == id);
+        if let Some(reason) = entry.and_then(|entry| entry.summary.protection.clone()) {
             return Err(format!("This session is protected. {reason}"));
         }
-        delete_session_dir(&session_root()?, &id, &ProtectedDirs::detect())?;
-        index.entries.retain(|entry| entry.summary.id != id);
-        index.parsed.remove(&id);
+        let source = entry.map_or("cli", |entry| entry.summary.source);
+        if source == "vscode" {
+            vscode_chat::delete(&vscode_config_dirs(), &id)?;
+        } else {
+            delete_session_dir(&session_root()?, &id, &ProtectedDirs::detect())?;
+            index.parsed.remove(&id);
+        }
+        index
+            .entries
+            .retain(|entry| !(entry.summary.id == id && entry.summary.source == source));
         Ok(())
     })
     .await
@@ -1184,7 +1191,16 @@ mod tests {
             .collect();
         missing.sort();
         missing.dedup();
+        let mut window_open: Vec<_> = index
+            .entries
+            .iter()
+            .filter(|entry| entry.summary.window_open)
+            .map(|entry| entry.summary.project.name.as_str())
+            .collect();
+        window_open.sort();
+        window_open.dedup();
         println!("missing_folders={missing:?}");
+        println!("vscode_window_open={window_open:?}");
         println!(
             "sessions={} vscode_chats={} with_vscode_state={with_vscode_state} cold={cold:?} warm={warm:?} in_use={in_use:?} protected_cli={protected:?}\nprojects={projects:?}",
             index.entries.len(),
@@ -1367,6 +1383,7 @@ mod tests {
                 deletions: None,
                 done: false,
                 in_use: false,
+                window_open: false,
                 protection: None,
                 resume_command: None,
             },

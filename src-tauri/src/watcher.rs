@@ -1,7 +1,8 @@
 //! Notifies the frontend when sessions change on disk.
 //!
-//! A native file watcher covers `~/.copilot/session-state`, VS Code's `agent-host.db` and the
-//! VS Code chat session folders (`workspaceStorage/*/chatSessions`, `emptyWindowChatSessions`).
+//! A native file watcher covers `~/.copilot/session-state`, VS Code's `agent-host.db` and
+//! `storage.json` (its open windows) and the VS Code chat session folders
+//! (`workspaceStorage/*/chatSessions`, `emptyWindowChatSessions`).
 //! Bursts of changes (an active session appends to `events.jsonl` constantly) are debounced
 //! and throttled. A slow periodic poll covers anything the watcher cannot see, such as a
 //! Copilot process exiting without removing its `inuse.<pid>.hold` lock file, or VS Code
@@ -163,7 +164,8 @@ fn is_relevant_path(path: &Path, session_root: Option<&Path>) -> bool {
     if matches!(parent, Some("chatSessions" | "emptyWindowChatSessions")) {
         return name.ends_with(".json") || name.ends_with(".jsonl");
     }
-    name == "agent-host.db" || name == "agent-host.db-wal"
+    // `storage.json` lists the open VS Code windows; chats of open workspaces cannot be deleted.
+    name == "agent-host.db" || name == "agent-host.db-wal" || name == "storage.json"
 }
 
 #[cfg(test)]
@@ -189,6 +191,7 @@ mod tests {
         assert!(relevant(&storage.join("agent-host.db-wal")));
         assert!(!relevant(&storage.join("agent-host.db-shm")));
         assert!(!relevant(&storage.join("state.vscdb")));
+        assert!(relevant(&storage.join("storage.json")));
 
         let chats = Path::new("/home/me/.config/Code/User/workspaceStorage/abc/chatSessions");
         assert!(relevant(

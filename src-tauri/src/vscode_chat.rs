@@ -4,15 +4,18 @@
 //! without a folder under `User/globalStorage/emptyWindowChatSessions`), either as one JSON
 //! document (`.json`, older) or as an append-only mutation log (`.jsonl`): an initial snapshot
 //! followed by set / push / delete operations on object paths. Titles, the archived ("done")
-//! flag and change counts come from the workspace's `state.vscdb`. Everything is read-only;
-//! VS Code owns these files and their index, so sessions are never deleted here.
+//! flag and change counts come from the workspace's `state.vscdb`.
+//!
+//! [`delete`] removes a chat the way VS Code does (its files and its `state.vscdb` entries), but
+//! only while no running VS Code window has the chat's workspace open: such a window keeps the
+//! chat index in memory and would write the chat back.
 
 use crate::{
     file_stamp, first_line_title, is_session_id, non_empty, ChatMessage, Entry, FileStamp,
     ParsedEvents, Project, SessionSummary,
 };
 use rayon::prelude::*;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::de::{
     value::{MapAccessDeserializer, SeqAccessDeserializer},
     IgnoredAny, MapAccess, SeqAccess, Visitor,
@@ -20,17 +23,20 @@ use serde::de::{
 use serde::{Deserialize, Deserializer};
 use serde_json::value::RawValue;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
-pub const PROTECTION: &str =
-    "VS Code chat sessions are managed by VS Code. Delete or archive them in VS Code's Chat view.";
+/// `state.vscdb` keys that hold per-chat entries.
+const INDEX_KEY: &str = "chat.ChatSessionStore.index";
+const AGENT_SESSION_CACHES: [&str; 2] = ["agentSessions.model.cache", "agentSessions.state.cache"];
+const TODO_KEY: &str = "memento/chat-todo-list";
+const TERMINALS_KEY: &str = "chat.terminalSessions";
 
 /// Parsed chat files and workspace metadata, reused while their files are unchanged.
 #[derive(Default)]
@@ -61,6 +67,8 @@ struct Workspace {
     folder: Option<String>,
     is_git_root: bool,
     open_command: Option<String>,
+    /// A running VS Code window has this workspace (or, for no-folder chats, an empty window) open.
+    window_open: bool,
 }
 
 struct ChatFile {
@@ -68,11 +76,19 @@ struct ChatFile {
     path: PathBuf,
     stamp: FileStamp,
     workspace: Arc<Workspace>,
+    /// Workspace storages that also hold a copy of the chat.
+    copies: Vec<ChatCopy>,
+}
+
+struct ChatCopy {
+    path: PathBuf,
+    stamp: FileStamp,
+    workspace: Arc<Workspace>,
 }
 
 /// Indexes all VS Code local chats with at least one message.
 pub fn index(cache: &mut Cache, config_dirs: &[PathBuf]) -> Vec<Entry> {
-    let files = discover(config_dirs);
+    let files: Vec<ChatFile> = discover(config_dirs).into_values().collect();
 
     let storage_dirs: Vec<PathBuf> = {
         let mut dirs: Vec<PathBuf> = files
@@ -174,7 +190,8 @@ fn build_entry(file: &ChatFile, chat: &ParsedChat, meta: &ChatMeta) -> Entry {
             deletions: meta.deletions,
             done: meta.archived,
             in_use: false,
-            protection: Some(PROTECTION.to_string()),
+            window_open: file.copies.iter().any(|copy| copy.workspace.window_open),
+            protection: None,
             resume_command: workspace.open_command.clone(),
         },
         git_root: workspace
@@ -186,16 +203,18 @@ fn build_entry(file: &ChatFile, chat: &ParsedChat, meta: &ChatMeta) -> Entry {
     }
 }
 
-fn discover(config_dirs: &[PathBuf]) -> Vec<ChatFile> {
+/// Finds every chat file, keyed by lowercase chat ID.
+fn discover(config_dirs: &[PathBuf]) -> HashMap<String, ChatFile> {
     let mut chat_dirs: Vec<(PathBuf, Arc<Workspace>)> = Vec::new();
     for config_dir in config_dirs {
+        let windows = open_windows(config_dir);
         let user_dir = config_dir.join("User");
         if let Ok(entries) = fs::read_dir(user_dir.join("workspaceStorage")) {
             for entry in entries.flatten() {
                 let storage_dir = entry.path();
                 let chat_dir = storage_dir.join("chatSessions");
                 if chat_dir.is_dir() {
-                    let workspace = read_workspace(storage_dir);
+                    let workspace = read_workspace(storage_dir, windows.as_ref());
                     chat_dirs.push((chat_dir, Arc::new(workspace)));
                 }
             }
@@ -208,15 +227,13 @@ fn discover(config_dirs: &[PathBuf]) -> Vec<ChatFile> {
                 folder: None,
                 is_git_root: false,
                 open_command: None,
+                window_open: windows.as_ref().is_some_and(|open| open.all || open.empty),
             };
             chat_dirs.push((empty_window, Arc::new(workspace)));
         }
     }
 
-    // VS Code copies chats into other workspace storages, e.g. into untitled workspaces of
-    // transient windows that are later deleted. Read the most recently written copy, but group
-    // it under the newest copy stored for a real folder.
-    let mut copies: HashMap<String, Vec<ChatFile>> = HashMap::new();
+    let mut copies: HashMap<String, Vec<ChatCopy>> = HashMap::new();
     for (dir, workspace) in chat_dirs {
         let Ok(entries) = fs::read_dir(&dir) else {
             continue;
@@ -236,41 +253,292 @@ fn discover(config_dirs: &[PathBuf]) -> Vec<ChatFile> {
                 continue;
             };
             let stamp = file_stamp(&path);
-            copies.entry(id.clone()).or_default().push(ChatFile {
-                id,
+            copies.entry(id).or_default().push(ChatCopy {
                 path,
                 stamp,
                 workspace: workspace.clone(),
             });
         }
     }
-    copies.into_values().filter_map(pick_copy).collect()
+    copies
+        .into_iter()
+        .filter_map(|(id, copies)| Some((id.clone(), pick_copy(id, copies)?)))
+        .collect()
 }
 
-fn pick_copy(copies: Vec<ChatFile>) -> Option<ChatFile> {
-    let has_folder = |file: &&ChatFile| file.workspace.folder.is_some();
-    let newest = |a: &&ChatFile, b: &&ChatFile| {
+/// VS Code copies chats into other workspace storages, e.g. into untitled workspaces of
+/// transient windows that are later deleted. Read the most recently written copy, but group it
+/// under the newest copy stored for a real folder.
+fn pick_copy(id: String, copies: Vec<ChatCopy>) -> Option<ChatFile> {
+    let has_folder = |copy: &&ChatCopy| copy.workspace.folder.is_some();
+    let newest = |a: &&ChatCopy, b: &&ChatCopy| {
         (a.stamp.1, has_folder(a), &a.path).cmp(&(b.stamp.1, has_folder(b), &b.path))
     };
     let workspace = copies
         .iter()
         .filter(has_folder)
         .max_by(newest)
-        .map(|file| file.workspace.clone());
+        .map(|copy| copy.workspace.clone());
     let content = copies.iter().max_by(newest)?;
+    let (path, stamp) = (content.path.clone(), content.stamp);
+    let workspace = workspace.unwrap_or_else(|| content.workspace.clone());
     Some(ChatFile {
-        id: content.id.clone(),
-        path: content.path.clone(),
-        stamp: content.stamp,
-        workspace: workspace.unwrap_or_else(|| content.workspace.clone()),
+        id,
+        path,
+        stamp,
+        workspace,
+        copies,
     })
 }
 
-fn read_workspace(storage_dir: PathBuf) -> Workspace {
+/// Workspaces open in a running VS Code. VS Code saves its window list to `storage.json` whenever
+/// a window loses focus or closes, so it is current by the time this app has the focus.
+struct OpenWindows {
+    uris: HashSet<String>,
+    /// A window without folder or workspace is open (it uses the no-folder chats).
+    empty: bool,
+    /// The window list could not be read: treat every workspace as open.
+    all: bool,
+}
+
+fn open_windows(config_dir: &Path) -> Option<OpenWindows> {
+    if !vscode_running(config_dir) {
+        return None;
+    }
+    let state = fs::read_to_string(config_dir.join("User/globalStorage/storage.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .map(|value| value["windowsState"].clone())
+        .filter(Value::is_object);
+    let mut open = OpenWindows {
+        uris: HashSet::new(),
+        empty: false,
+        all: state.is_none(),
+    };
+    let state = state.unwrap_or(Value::Null);
+    let windows = state["openedWindows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain([&state["lastActiveWindow"]])
+        .filter(|window| window.is_object());
+    for window in windows {
+        let uri = window["folder"]
+            .as_str()
+            .or_else(|| window["workspaceIdentifier"]["configURIPath"].as_str());
+        match uri {
+            Some(uri) => {
+                open.uris.insert(normalize_uri(uri));
+            }
+            None => open.empty = true,
+        }
+    }
+    Some(open)
+}
+
+fn normalize_uri(uri: &str) -> String {
+    percent_decode(uri).trim_end_matches('/').to_lowercase()
+}
+
+/// VS Code writes its main process ID to `code.lock` while it runs and removes the file on exit.
+fn vscode_running(config_dir: &Path) -> bool {
+    let lock = config_dir.join("code.lock");
+    let Some(pid) = fs::read_to_string(&lock)
+        .ok()
+        .and_then(|text| text.trim().parse::<u32>().ok())
+    else {
+        return false;
+    };
+    let written = fs::metadata(&lock).and_then(|meta| meta.modified()).ok();
+    process_running_since(pid, written)
+}
+
+/// Whether process `pid` runs and was started no later than `lock_written` (a newer process
+/// reused the PID of a VS Code that crashed without removing its lock file).
+#[cfg(windows)]
+fn process_running_since(pid: u32, lock_written: Option<SystemTime>) -> bool {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, FILETIME,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    const STILL_ACTIVE: u32 = 259;
+    let zero = || FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut created, mut exited, mut kernel, mut user) = (zero(), zero(), zero(), zero());
+    let mut exit_code = 0u32;
+    // SAFETY: plain Win32 queries on a process handle that is opened and closed here.
+    let (alive, has_times) = unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            // An elevated VS Code cannot be inspected; assume it is the one running.
+            return GetLastError() == ERROR_ACCESS_DENIED;
+        }
+        let alive = GetExitCodeProcess(handle, &mut exit_code) != 0 && exit_code == STILL_ACTIVE;
+        let has_times =
+            GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) != 0;
+        CloseHandle(handle);
+        (alive, has_times)
+    };
+    if !alive {
+        return false;
+    }
+    // FILETIME counts 100 ns intervals since 1601-01-01.
+    const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
+    let ticks = (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime);
+    let started = ticks
+        .checked_sub(UNIX_EPOCH_TICKS)
+        .map(|ticks| SystemTime::UNIX_EPOCH + Duration::from_nanos(ticks.saturating_mul(100)));
+    match (has_times.then_some(started).flatten(), lock_written) {
+        (Some(started), Some(written)) => started <= written + Duration::from_secs(60),
+        _ => true,
+    }
+}
+
+#[cfg(not(windows))]
+fn process_running_since(pid: u32, _lock_written: Option<SystemTime>) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Deletes a chat the way VS Code does: every copy of its file, its editing-session folder and
+/// its entries in the `state.vscdb` of each workspace holding a copy.
+pub fn delete(config_dirs: &[PathBuf], id: &str) -> Result<(), String> {
+    let id = id.to_ascii_lowercase();
+    if !is_session_id(&id) {
+        return Err("Invalid session id".to_string());
+    }
+    let chat = discover(config_dirs)
+        .remove(&id)
+        .ok_or_else(|| format!("Chat {id} was not found"))?;
+    if let Some(copy) = chat.copies.iter().find(|copy| copy.workspace.window_open) {
+        let place = copy
+            .workspace
+            .folder
+            .as_deref()
+            .unwrap_or("a window without folder");
+        return Err(format!(
+            "This chat is open in VS Code ({place}). Close that VS Code window and try again."
+        ));
+    }
+    let mut storage_dirs: Vec<&Path> = chat
+        .copies
+        .iter()
+        .map(|copy| copy.workspace.storage_dir.as_path())
+        .collect();
+    storage_dirs.sort();
+    storage_dirs.dedup();
+    // Entries go first: VS Code ignores a chat file without an index entry, but lists an entry
+    // without a file as a chat that cannot be opened.
+    for dir in &storage_dirs {
+        remove_chat_state(&dir.join("state.vscdb"), &id)?;
+    }
+    for copy in &chat.copies {
+        match fs::remove_file(&copy.path) {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+                return Err(format!("Unable to delete {}: {err}", copy.path.display()));
+            }
+            _ => {}
+        }
+    }
+    for dir in &storage_dirs {
+        let editing = dir.join("chatEditingSessions").join(&id);
+        if editing.is_dir() {
+            fs::remove_dir_all(&editing)
+                .map_err(|err| format!("Unable to delete {}: {err}", editing.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn remove_chat_state(db_path: &Path, id: &str) -> Result<(), String> {
+    if !db_path.is_file() {
+        return Ok(());
+    }
+    let fail = |err: rusqlite::Error| format!("Unable to update {}: {err}", db_path.display());
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let mut conn = Connection::open_with_flags(db_path, flags).map_err(fail)?;
+    conn.busy_timeout(Duration::from_secs(5)).map_err(fail)?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(fail)?;
+    for key in [INDEX_KEY, TODO_KEY, TERMINALS_KEY]
+        .into_iter()
+        .chain(AGENT_SESSION_CACHES)
+    {
+        let value: Option<String> = tx
+            .query_row("SELECT value FROM ItemTable WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(fail)?;
+        let Some(mut value) = value.and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        else {
+            continue;
+        };
+        if remove_chat_from(key, &mut value, id) {
+            tx.execute(
+                "UPDATE ItemTable SET value = ?1 WHERE key = ?2",
+                (value.to_string(), key),
+            )
+            .map_err(fail)?;
+        }
+    }
+    tx.commit().map_err(fail)
+}
+
+/// Removes chat `id` (lowercase) from the `state.vscdb` value stored under `key`; returns
+/// whether anything changed.
+fn remove_chat_from(key: &str, value: &mut Value, id: &str) -> bool {
+    let is_id = |text: &str| text.eq_ignore_ascii_case(id);
+    let retain_map = |map: Option<&mut serde_json::Map<String, Value>>,
+                      keep: &dyn Fn(&String, &Value) -> bool| {
+        map.is_some_and(|map| {
+            let before = map.len();
+            map.retain(|key, value| keep(key, value));
+            map.len() != before
+        })
+    };
+    match key {
+        INDEX_KEY => retain_map(
+            value.get_mut("entries").and_then(Value::as_object_mut),
+            &|key, _| !is_id(key),
+        ),
+        TODO_KEY => retain_map(value.as_object_mut(), &|key, _| !is_id(key)),
+        TERMINALS_KEY => retain_map(value.as_object_mut(), &|_, terminal| {
+            !terminal["sessionId"].as_str().is_some_and(is_id)
+        }),
+        _ => value.as_array_mut().is_some_and(|items| {
+            let before = items.len();
+            items.retain(|item| {
+                item["resource"]
+                    .as_str()
+                    .and_then(local_session_id)
+                    .as_deref()
+                    != Some(id)
+            });
+            items.len() != before
+        }),
+    }
+}
+
+fn read_workspace(storage_dir: PathBuf, windows: Option<&OpenWindows>) -> Workspace {
     let value = fs::read_to_string(storage_dir.join("workspace.json"))
         .ok()
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
         .unwrap_or(Value::Null);
+    let uri = value["folder"]
+        .as_str()
+        .or_else(|| value["workspace"].as_str());
+    let window_open = windows.is_some_and(|open| {
+        open.all || uri.is_some_and(|uri| open.uris.contains(&normalize_uri(uri)))
+    });
     let (folder, open_command) = if let Some(uri) = value["folder"].as_str() {
         match file_uri_to_path(uri) {
             Some(path) => (Some(path.clone()), Some(format!("code \"{path}\""))),
@@ -298,6 +566,7 @@ fn read_workspace(storage_dir: PathBuf) -> Workspace {
         folder,
         is_git_root,
         open_command,
+        window_open,
     }
 }
 
@@ -379,7 +648,7 @@ fn read_metadata(db_path: &Path) -> HashMap<String, ChatMeta> {
         .unwrap_or(Value::Null)
     };
 
-    if let Some(entries) = read("chat.ChatSessionStore.index")["entries"].as_object() {
+    if let Some(entries) = read(INDEX_KEY)["entries"].as_object() {
         for (id, entry) in entries {
             if is_session_id(id) {
                 metas.entry(id.to_ascii_lowercase()).or_default().title =
@@ -388,7 +657,7 @@ fn read_metadata(db_path: &Path) -> HashMap<String, ChatMeta> {
         }
     }
     // Both caches are lists keyed by `vscode-chat-session://local/<base64 session id>`.
-    for key in ["agentSessions.model.cache", "agentSessions.state.cache"] {
+    for key in AGENT_SESSION_CACHES {
         for item in read(key).as_array().into_iter().flatten() {
             let Some(id) = item["resource"].as_str().and_then(local_session_id) else {
                 continue;
@@ -945,6 +1214,206 @@ mod tests {
             "copilot-session-search-{}-{name}",
             std::process::id()
         ))
+    }
+
+    const CHAT: &str = "24c442d3-ada5-4d9a-b945-c448f7d78023";
+    const OTHER: &str = "0be69b86-e4aa-4c13-9b3d-85a782ab7fe8";
+
+    fn chat_resource(id: &str) -> String {
+        let encoded: String = {
+            const ALPHABET: &[u8] =
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            id.as_bytes()
+                .chunks(3)
+                .flat_map(|chunk| {
+                    let bytes = [
+                        chunk[0],
+                        *chunk.get(1).unwrap_or(&0),
+                        *chunk.get(2).unwrap_or(&0),
+                    ];
+                    let n = (u32::from(bytes[0]) << 16)
+                        | (u32::from(bytes[1]) << 8)
+                        | u32::from(bytes[2]);
+                    (0..=chunk.len())
+                        .map(move |i| ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char)
+                })
+                .collect()
+        };
+        format!("vscode-chat-session://local/{encoded}")
+    }
+
+    /// Creates a workspace storage with a chat file, editing session and `state.vscdb` entries.
+    fn write_workspace(config_dir: &Path, hash: &str, folder_uri: &str, ids: &[&str]) -> PathBuf {
+        let storage = config_dir.join("User/workspaceStorage").join(hash);
+        fs::create_dir_all(storage.join("chatSessions")).unwrap();
+        fs::write(
+            storage.join("workspace.json"),
+            serde_json::json!({ "folder": folder_uri }).to_string(),
+        )
+        .unwrap();
+        for id in ids {
+            fs::write(
+                storage.join("chatSessions").join(format!("{id}.jsonl")),
+                "{}",
+            )
+            .unwrap();
+            fs::create_dir_all(storage.join("chatEditingSessions").join(id)).unwrap();
+        }
+        let entries: serde_json::Map<String, Value> = ids
+            .iter()
+            .map(|id| (id.to_string(), serde_json::json!({ "sessionId": id })))
+            .collect();
+        let resources: Vec<Value> = ids
+            .iter()
+            .map(|id| serde_json::json!({ "resource": chat_resource(id), "archived": false }))
+            .collect();
+        let todos: serde_json::Map<String, Value> = ids
+            .iter()
+            .map(|id| (id.to_string(), serde_json::json!([])))
+            .collect();
+        let terminals: serde_json::Map<String, Value> = ids
+            .iter()
+            .enumerate()
+            .map(|(pid, id)| (pid.to_string(), serde_json::json!({ "sessionId": id })))
+            .collect();
+        let conn = Connection::open(storage.join("state.vscdb")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)",
+        )
+        .unwrap();
+        for (key, value) in [
+            (
+                INDEX_KEY,
+                serde_json::json!({ "version": 1, "entries": entries }),
+            ),
+            (AGENT_SESSION_CACHES[0], Value::Array(resources.clone())),
+            (AGENT_SESSION_CACHES[1], Value::Array(resources)),
+            (TODO_KEY, Value::Object(todos)),
+            (TERMINALS_KEY, Value::Object(terminals)),
+            ("unrelated", serde_json::json!({ "keep": CHAT })),
+        ] {
+            conn.execute(
+                "INSERT INTO ItemTable (key, value) VALUES (?1, ?2)",
+                (key, value.to_string()),
+            )
+            .unwrap();
+        }
+        storage
+    }
+
+    fn stored_ids(storage: &Path) -> Vec<String> {
+        read_metadata(&storage.join("state.vscdb"))
+            .into_keys()
+            .collect()
+    }
+
+    #[test]
+    fn deletes_every_copy_and_its_state() {
+        let config_dir = temp_path("delete-chat");
+        let _ = fs::remove_dir_all(&config_dir);
+        let main = write_workspace(&config_dir, "a", "file:///c%3A/Repos/app", &[CHAT, OTHER]);
+        let copy = write_workspace(&config_dir, "b", "file:///c%3A/Repos/untitled", &[CHAT]);
+        assert_eq!(
+            chat_resource(CHAT).len(),
+            "vscode-chat-session://local/".len() + 48
+        );
+        assert_eq!(
+            local_session_id(&chat_resource(CHAT)).as_deref(),
+            Some(CHAT)
+        );
+
+        delete(std::slice::from_ref(&config_dir), &CHAT.to_uppercase()).unwrap();
+
+        for storage in [&main, &copy] {
+            assert!(!storage.join(format!("chatSessions/{CHAT}.jsonl")).exists());
+            assert!(!storage.join("chatEditingSessions").join(CHAT).exists());
+        }
+        assert!(main.join(format!("chatSessions/{OTHER}.jsonl")).exists());
+        assert!(main.join("chatEditingSessions").join(OTHER).exists());
+        assert_eq!(stored_ids(&main), vec![OTHER.to_string()]);
+        assert!(stored_ids(&copy).is_empty());
+        let conn = Connection::open(main.join("state.vscdb")).unwrap();
+        let read = |key: &str| -> String {
+            conn.query_row("SELECT value FROM ItemTable WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .unwrap()
+        };
+        assert!(!read(TODO_KEY).contains(CHAT) && read(TODO_KEY).contains(OTHER));
+        assert!(!read(TERMINALS_KEY).contains(CHAT) && read(TERMINALS_KEY).contains(OTHER));
+        assert!(read("unrelated").contains(CHAT));
+        drop(conn);
+
+        assert!(delete(std::slice::from_ref(&config_dir), CHAT)
+            .unwrap_err()
+            .contains("not found"));
+        fs::remove_dir_all(&config_dir).unwrap();
+    }
+
+    #[test]
+    fn refuses_chats_of_workspaces_open_in_vscode() {
+        let config_dir = temp_path("delete-open-chat");
+        let _ = fs::remove_dir_all(&config_dir);
+        let storage = write_workspace(&config_dir, "a", "file:///c%3A/Repos/App", &[CHAT]);
+        let global = config_dir.join("User/globalStorage");
+        fs::create_dir_all(&global).unwrap();
+        fs::write(
+            global.join("storage.json"),
+            serde_json::json!({ "windowsState": {
+                "lastActiveWindow": { "folder": "file:///c:/repos/app/" },
+                "openedWindows": [{ "workspaceIdentifier": { "id": "x", "configURIPath": "file:///c%3A/w.code-workspace" } }]
+            } })
+            .to_string(),
+        )
+        .unwrap();
+        let config_dirs = std::slice::from_ref(&config_dir);
+
+        // Not running: the window list is stale.
+        assert!(discover(config_dirs)[CHAT]
+            .copies
+            .iter()
+            .all(|c| !c.workspace.window_open));
+
+        // This test process stands in for a running VS Code.
+        fs::write(config_dir.join("code.lock"), std::process::id().to_string()).unwrap();
+        let chats = discover(config_dirs);
+        assert!(chats[CHAT].copies[0].workspace.window_open);
+        let err = delete(config_dirs, CHAT).unwrap_err();
+        assert!(err.contains("Close that VS Code window"), "{err}");
+        assert!(storage.join(format!("chatSessions/{CHAT}.jsonl")).exists());
+        assert_eq!(stored_ids(&storage), vec![CHAT.to_string()]);
+
+        let open = open_windows(&config_dir).unwrap();
+        assert!(!open.empty && !open.all);
+        assert!(open.uris.contains("file:///c:/w.code-workspace"));
+
+        fs::write(config_dir.join("code.lock"), "4294967294").unwrap();
+        delete(config_dirs, CHAT).unwrap();
+        fs::remove_dir_all(&config_dir).unwrap();
+    }
+
+    #[test]
+    fn removes_chat_from_state_values() {
+        let mut index = serde_json::json!({ "version": 1, "entries": { CHAT: {}, OTHER: {} } });
+        assert!(remove_chat_from(INDEX_KEY, &mut index, CHAT));
+        assert!(!remove_chat_from(INDEX_KEY, &mut index, CHAT));
+        assert_eq!(index["entries"].as_object().unwrap().len(), 1);
+
+        let mut cache = serde_json::json!([
+            { "resource": chat_resource(CHAT) },
+            { "resource": chat_resource(OTHER) },
+            { "resource": "vscode-chat-session://copilotcli/abc" }
+        ]);
+        assert!(remove_chat_from(AGENT_SESSION_CACHES[0], &mut cache, CHAT));
+        assert_eq!(cache.as_array().unwrap().len(), 2);
+
+        let mut terminals =
+            serde_json::json!({ "1": { "sessionId": CHAT }, "2": { "sessionId": OTHER } });
+        assert!(remove_chat_from(TERMINALS_KEY, &mut terminals, CHAT));
+        assert_eq!(terminals.as_object().unwrap().len(), 1);
+
+        let mut not_a_map = serde_json::json!([CHAT]);
+        assert!(!remove_chat_from(TODO_KEY, &mut not_a_map, CHAT));
     }
 
     #[test]

@@ -32,6 +32,7 @@ const el = {
   dialogCancel: document.getElementById("dialog-cancel"),
   dialogConfirm: document.getElementById("dialog-confirm"),
   dialogText: document.getElementById("dialog-text"),
+  dialogWarning: document.getElementById("dialog-warning"),
   list: document.getElementById("session-list"),
   listEmpty: document.getElementById("list-empty"),
   mergeButton: document.getElementById("merge-project"),
@@ -373,7 +374,7 @@ function renderList() {
       const badges = [
         hit.inUse ? `<span class="badge live">${escapeHtml(t("badge.inUse"))}</span>` : "",
         hit.source === "vscode"
-          ? `<span class="badge vscode" title="${escapeHtml(hit.protection ?? "")}">${escapeHtml(t("badge.vscodeChat"))}</span>`
+          ? `<span class="badge vscode"${hit.windowOpen ? ` title="${escapeHtml(t("footer.vscodeOpen"))}"` : ""}>${escapeHtml(t("badge.vscodeChat"))}</span>`
           : hit.protection
             ? `<span class="badge protected" title="${escapeHtml(hit.protection)}">${escapeHtml(t("badge.protected"))}</span>`
             : "",
@@ -424,12 +425,14 @@ function updateFooter() {
   el.resumeCommand.textContent = session ? resumeCommand(session) || t("footer.noCommand") : t("footer.noSession");
   el.resumeCommand.title = resumeHint(session);
   el.copyResume.disabled = !session?.resumeCommand;
-  el.delete.disabled = !session || session.inUse || Boolean(session.protection);
+  el.delete.disabled = !session || session.inUse || session.windowOpen || Boolean(session.protection);
   el.delete.title = session?.protection
     ? t("footer.protected", { reason: session.protection })
     : session?.inUse
       ? t("footer.inUse")
-      : t("footer.delete");
+      : session?.windowOpen
+        ? t("footer.vscodeOpen")
+        : t("footer.delete");
   el.setDone.classList.toggle("active", Boolean(session?.done));
   el.setDone.title = session?.protection
     ? t("footer.protected", { reason: session.protection })
@@ -823,7 +826,14 @@ function openDeleteDialog() {
     showToast(t("footer.protected", { reason: session.protection }));
     return;
   }
+  if (session.windowOpen) {
+    showToast(t("footer.vscodeOpen"));
+    return;
+  }
   el.dialogText.innerHTML = `<strong>${escapeHtml(session.title)}</strong><br><code>${escapeHtml(session.id)}</code>`;
+  const vscodeChat = session.source === "vscode";
+  el.dialogWarning.dataset.i18n = vscodeChat ? "delete.warningVsCode" : "delete.warning";
+  el.dialogWarning.textContent = vscodeChat ? t("delete.warningVsCode") : t("delete.warning");
   el.dialog.hidden = false;
   el.dialogCancel.focus();
 }

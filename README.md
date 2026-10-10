@@ -36,11 +36,17 @@ local GitHub Copilot (CLI / VS Code agent) sessions. Styled after VS Code Dark M
   "Windows Terminal Agent" or "Open Design") instead of by folder.
 - VS Code local chats (the "Local" sessions in VS Code's Chat view, stored per workspace) are
   listed and searchable next to the Copilot CLI sessions, grouped by their workspace folder, and
-  badged **VS Code chat**. They are read-only: VS Code owns them, so **Delete** and **Set as done**
-  are disabled; the footer shows a `code "<folder>"` command to open the folder in VS Code. Chats
-  that VS Code copied into several workspace storages are shown once, under their real folder.
+  badged **VS Code chat**. The footer shows a `code "<folder>"` command to open the folder in VS
+  Code. Chats that VS Code copied into several workspace storages are shown once, under their real
+  folder. **Delete** removes the chat the way VS Code does: every copy of the chat file, its
+  `chatEditingSessions/<id>` folder and its entries in the workspace's `state.vscdb` (chat index,
+  agent session caches, todo list, terminal sessions). It is disabled while the chat's folder is
+  open in a running VS Code window, because VS Code keeps the chat list in memory and would write
+  the chat back; close that window first. A running VS Code is detected via `code.lock` (process
+  id) and its open windows via `storage.json`.
 - Refreshes automatically: a file watcher on `~/.copilot/session-state`, VS Code's
-  `agent-host.db` and VS Code's chat folders picks up new, updated and removed sessions
+  `agent-host.db`, VS Code's chat folders and its window list (`storage.json`) picks up new,
+  updated and removed sessions and opened or closed VS Code windows
   (debounced, at most every 5 s), with a 45 s polling fallback (e.g. for **In use** locks released
   by exiting processes, or chats archived in VS Code). The open chat keeps its scroll position, or
   follows new messages when scrolled to the bottom.
@@ -73,10 +79,13 @@ Keyboard: `Ctrl+F` / `Ctrl+K` focus search, `Esc` clear, `Up` / `Down` move, `En
 | In-use detection         | `~/.copilot/session-state/<id>/inuse.<pid>.hold` (exclusively locked while live) | read      |
 | VS Code title/done/diffs | `%APPDATA%/Code/User/globalStorage/agent-host.db` (`sessions_v2`)                | read-only |
 | VS Code id -> session id | `%APPDATA%/Code/agentSessionData/<vscode-id>/session.db`                         | read-only |
-| VS Code local chats      | `%APPDATA%/Code/User/workspaceStorage/<hash>/chatSessions/<id>.json[l]`          | read-only |
+| VS Code local chats      | `%APPDATA%/Code/User/workspaceStorage/<hash>/chatSessions/<id>.json[l]`          | read/delete |
+| VS Code chat edits       | `%APPDATA%/Code/User/workspaceStorage/<hash>/chatEditingSessions/<id>/`          | delete    |
 | VS Code chat folder      | `%APPDATA%/Code/User/workspaceStorage/<hash>/workspace.json`                     | read-only |
-| VS Code chat title/done  | `%APPDATA%/Code/User/workspaceStorage/<hash>/state.vscdb` (`ItemTable`)          | read-only |
-| VS Code no-folder chats  | `%APPDATA%/Code/User/globalStorage/emptyWindowChatSessions/<id>.json[l]`         | read-only |
+| VS Code chat title/done  | `%APPDATA%/Code/User/workspaceStorage/<hash>/state.vscdb` (`ItemTable`)          | read/write |
+| VS Code no-folder chats  | `%APPDATA%/Code/User/globalStorage/emptyWindowChatSessions/<id>.json[l]` (index in `globalStorage/state.vscdb`) | read/delete |
+| VS Code running          | `%APPDATA%/Code/code.lock` (main process id)                                     | read-only |
+| VS Code open windows     | `%APPDATA%/Code/User/globalStorage/storage.json` (`windowsState`)                | read-only |
 
 Only user prompts and top-level assistant replies are shown; tool calls, sub-agent output,
 thinking and injected system/skill messages are skipped.
@@ -106,9 +115,11 @@ cargo clippy --all-targets -- -D warnings
 
 - **Set as done** is display-only for now. VS Code owns that state in `agent-host.db`
   (versioned, hashed records), so it is not written externally; use "Set as done" in VS Code.
-- **Delete** removes the session folder under `~/.copilot/session-state` only. Entries in
-  `~/.copilot/session-store.db` and VS Code's session list are not touched and may linger until
-  those tools clean them up.
+- **Delete** of a Copilot CLI session removes its folder under `~/.copilot/session-state` only.
+  Entries in `~/.copilot/session-store.db` and VS Code's session list are not touched and may
+  linger until those tools clean them up.
 - Session paths assume the default VS Code (stable) profile location.
-- VS Code local chats cannot be deleted, archived or resumed from here; the footer command only
-  opens their folder. Chats of remote (WSL/SSH) workspaces are grouped by their remote path.
+- VS Code local chats cannot be archived or resumed from here; the footer command only opens their
+  folder. Chats of remote (WSL/SSH) workspaces are grouped by their remote path. If VS Code is
+  running but its window list can't be read, every VS Code chat counts as open and can't be
+  deleted until VS Code is closed.

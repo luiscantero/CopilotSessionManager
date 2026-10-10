@@ -1,0 +1,16 @@
+[
+  { "code": "en-us", "name": "English (United States)" },
+  { "code": "de-de", "name": "Deutsch" },
+  { "code": "fr-fr", "name": "Français" },
+  { "code": "es-es", "name": "Español" },
+  { "code": "it-it", "name": "Italiano" },
+  { "code": "pt-br", "name": "Português (Brasil)" },
+  { "code": "sv-se", "name": "Svenska" },
+  { "code": "zh-cn", "name": "中文（简体）" },
+  { "code": "ja-jp", "name": "日本語" },
+  { "code": "ko-kr", "name": "한국어" },
+  { "code": "vi-vn", "name": "Tiếng Việt" },
+  { "code": "th-th", "name": "ไทย" },
+  { "code": "he-il", "name": "עברית", "dir": "rtl" },
+  { "code": "ar", "name": "العربية", "dir": "rtl" }
+]

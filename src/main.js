@@ -9,6 +9,7 @@ const ICONS = {
   copilot: '<svg viewBox="0 0 16 16"><path d="M4 6.2C4 4.4 5.4 3 7.2 3h1.6C10.6 3 12 4.4 12 6.2v3.6c0 1.8-1.4 3.2-3.2 3.2H7.2C5.4 13 4 11.6 4 9.8z"/><path d="M2 8h2M12 8h2M6.5 7.5v1M9.5 7.5v1"/></svg>',
   merge: '<svg viewBox="0 0 16 16"><path d="M4.5 2v3c0 2.5 3.5 3 3.5 5.5V14M11.5 2v3c0 2.5-3.5 3-3.5 5.5M6 12.5l2 2 2-2"/></svg>',
   copy: '<svg viewBox="0 0 16 16"><path d="M3.5 10.5V3.2c0-.4.3-.7.7-.7h6.3"/><rect x="5.5" y="4.5" width="7" height="9" rx=".8"/></svg>',
+  gear: '<svg viewBox="0 0 16 16"><path d="M12.83 6.71L14.51 6.91L14.51 9.09L12.83 9.29L12.33 10.5L13.37 11.83L11.83 13.37L10.5 12.33L9.29 12.83L9.09 14.51L6.91 14.51L6.71 12.83L5.5 12.33L4.17 13.37L2.63 11.83L3.67 10.5L3.17 9.29L1.49 9.09L1.49 6.91L3.17 6.71L3.67 5.5L2.63 4.17L4.17 2.63L5.5 3.67L6.71 3.17L6.91 1.49L9.09 1.49L9.29 3.17L10.5 3.67L11.83 2.63L13.37 4.17L12.33 5.5z"/><circle cx="8" cy="8" r="2.1"/></svg>',
   refresh: '<svg viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v3h-3"/></svg>',
   search: '<svg viewBox="0 0 16 16"><circle cx="6.8" cy="6.8" r="4.3"/><path d="M10 10l4 4"/></svg>',
   terminal: '<svg viewBox="0 0 16 16"><path d="M3 4.5l3.5 3.5L3 11.5M8 12h5"/></svg>',
@@ -43,8 +44,12 @@ const el = {
   mergeText: document.getElementById("merge-text"),
   projectFilter: document.getElementById("project-filter"),
   refresh: document.getElementById("refresh"),
+  languageSelect: document.getElementById("language-select"),
   resumeCommand: document.getElementById("resume-command"),
   search: document.getElementById("search"),
+  settings: document.getElementById("settings"),
+  settingsClose: document.getElementById("settings-close"),
+  settingsDialog: document.getElementById("settings-backdrop"),
   splitter: document.getElementById("splitter"),
   toast: document.getElementById("toast"),
   toggleDone: document.getElementById("toggle-done")
@@ -64,8 +69,118 @@ const state = {
   refreshing: false,
   refreshPending: false,
   chatSessionId: null,
-  chatMessageCount: 0
+  chatMessageCount: 0,
+  chatDetail: null
 };
+
+const DEFAULT_LANGUAGE = "en-us";
+const I18N_ATTRIBUTES = {
+  "data-i18n-aria-label": "aria-label",
+  "data-i18n-placeholder": "placeholder",
+  "data-i18n-title": "title"
+};
+
+const i18n = {
+  languages: [],
+  code: DEFAULT_LANGUAGE,
+  dir: "ltr",
+  strings: {},
+  fallback: {},
+  relativeTime: new Intl.RelativeTimeFormat(DEFAULT_LANGUAGE, { numeric: "always", style: "short" })
+};
+
+async function fetchJson(path) {
+  const response = await fetch(path);
+  if (!response.ok) {
+    throw new Error(`${path}: ${response.status} ${response.statusText}`);
+  }
+  return response.json();
+}
+
+function hasTranslation(key) {
+  return key in i18n.strings || key in i18n.fallback;
+}
+
+function translationTemplate(key) {
+  return i18n.strings[key] ?? i18n.fallback[key] ?? key;
+}
+
+function fillTemplate(template, params) {
+  return template.replace(/\{(\w+)\}/g, (match, name) => (name in params ? String(params[name]) : match));
+}
+
+function t(key, params = {}) {
+  return fillTemplate(translationTemplate(key), params);
+}
+
+// Escapes the translation itself; params are inserted as-is, so they must already be safe HTML.
+function tHtml(key, params = {}) {
+  return fillTemplate(escapeHtml(translationTemplate(key)), params);
+}
+
+// Saved choice first, then the first OS/browser language we have (exact match, then same base language).
+function detectLanguage() {
+  const codes = i18n.languages.map((language) => language.code);
+  const saved = localStorage.getItem("language");
+  if (codes.includes(saved)) {
+    return saved;
+  }
+  const preferred = (navigator.languages?.length ? navigator.languages : [navigator.language]).filter(Boolean);
+  for (const tag of preferred.map((tag) => tag.toLowerCase())) {
+    const base = tag.split("-")[0];
+    const match = codes.find((code) => code === tag) || codes.find((code) => code.split("-")[0] === base);
+    if (match) {
+      return match;
+    }
+  }
+  return DEFAULT_LANGUAGE;
+}
+
+async function setLanguage(code) {
+  const language = i18n.languages.find((entry) => entry.code === code) || { code: DEFAULT_LANGUAGE };
+  const strings = language.code === DEFAULT_LANGUAGE ? i18n.fallback : await fetchJson(`locales/${language.code}.json`);
+  i18n.code = language.code;
+  i18n.dir = language.dir === "rtl" ? "rtl" : "ltr";
+  i18n.strings = strings;
+  i18n.relativeTime = new Intl.RelativeTimeFormat(language.code, { numeric: "always", style: "short" });
+  document.documentElement.lang = language.code;
+  document.documentElement.dir = i18n.dir;
+  applyTranslations();
+}
+
+async function initI18n() {
+  try {
+    [i18n.languages, i18n.fallback] = await Promise.all([
+      fetchJson("locales/languages.json"),
+      fetchJson(`locales/${DEFAULT_LANGUAGE}.json`)
+    ]);
+  } catch (error) {
+    console.warn("Unable to load translations", error);
+    return;
+  }
+  try {
+    await setLanguage(detectLanguage());
+  } catch (error) {
+    console.warn("Unable to load the language, using the default", error);
+    await setLanguage(DEFAULT_LANGUAGE);
+  }
+}
+
+function applyTranslations() {
+  document.querySelectorAll("[data-i18n]").forEach((node) => {
+    if (hasTranslation(node.dataset.i18n)) {
+      node.textContent = t(node.dataset.i18n);
+    }
+  });
+  for (const [attribute, target] of Object.entries(I18N_ATTRIBUTES)) {
+    document.querySelectorAll(`[${attribute}]`).forEach((node) => {
+      const key = node.getAttribute(attribute);
+      if (hasTranslation(key)) {
+        node.setAttribute(target, t(key));
+      }
+    });
+  }
+}
 
 function icon(name) {
   return ICONS[name] || "";
@@ -120,20 +235,20 @@ function relativeTime(iso) {
   }
   const seconds = Math.max(0, (Date.now() - time) / 1000);
   const units = [
-    [60, "min", 60],
-    [3600, "hr", 24],
+    [60, "minute", 60],
+    [3600, "hour", 24],
     [86400, "day", 7],
-    [604800, "wk", 5],
-    [2629800, "mo", 12],
-    [31557600, "yr", Infinity]
+    [604800, "week", 5],
+    [2629800, "month", 12],
+    [31557600, "year", Infinity]
   ];
   if (seconds < 60) {
-    return "just now";
+    return t("time.justNow");
   }
-  for (const [size, label, limit] of units) {
+  for (const [size, unit, limit] of units) {
     const value = Math.floor(seconds / size);
     if (value < limit) {
-      return `${value} ${label}${value === 1 ? "" : "s"} ago`;
+      return i18n.relativeTime.format(-value, unit);
     }
   }
   return "";
@@ -142,7 +257,7 @@ function relativeTime(iso) {
 function formatDate(iso) {
   const time = Date.parse(iso || "");
   return time
-    ? new Date(time).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
+    ? new Date(time).toLocaleString(i18n.code, { dateStyle: "medium", timeStyle: "short" })
     : "";
 }
 
@@ -182,10 +297,13 @@ function renderProjectOptions() {
   projects.forEach(({ name }) => nameCounts.set(name.toLowerCase(), (nameCounts.get(name.toLowerCase()) || 0) + 1));
 
   el.projectFilter.innerHTML = [
-    `<option value="">All repositories (${base.length})</option>`,
+    `<option value="">${escapeHtml(t("projects.all", { count: base.length }))}</option>`,
     ...projects.map(({ key, name, detail, count, missing, merged }) => {
       const label = nameCounts.get(name.toLowerCase()) > 1 && detail ? `${name} — ${detail}` : name;
-      const notes = [missing ? "folder missing" : "", merged?.length ? `+${merged.length} merged` : ""].filter(Boolean);
+      const notes = [
+        missing ? t("projects.folderMissing") : "",
+        merged?.length ? t("projects.mergedCount", { count: merged.length }) : ""
+      ].filter(Boolean);
       const suffix = notes.length ? ` · ${notes.join(" · ")}` : "";
       return `<option value="${escapeHtml(key)}" title="${escapeHtml(projectTooltip({ detail, missing, merged }))}">${escapeHtml(label)} (${count})${escapeHtml(suffix)}</option>`;
     })
@@ -193,11 +311,9 @@ function renderProjectOptions() {
   el.projectFilter.value = state.project;
   el.projectFilter.classList.toggle("active", Boolean(state.project));
   const selected = groups.get(state.project);
-  el.projectFilter.title = selected ? projectTooltip(selected) || selected.name : "Filter by repository or folder";
+  el.projectFilter.title = selected ? projectTooltip(selected) || selected.name : t("projects.filterTitle");
   el.mergeButton.disabled = !isMergeable(state.project);
-  el.mergeButton.title = isMergeable(state.project)
-    ? "Merge this project into another (renamed or moved repository)"
-    : "Select a repository or folder to merge it into another";
+  el.mergeButton.title = isMergeable(state.project) ? t("projects.mergeTitle") : t("projects.mergeDisabledTitle");
 }
 
 function isMergeable(key) {
@@ -207,8 +323,8 @@ function isMergeable(key) {
 function projectTooltip({ detail, missing, merged }) {
   return [
     detail,
-    missing ? "Folder no longer exists (renamed or moved?). Use the merge button to group it with the new project." : "",
-    merged?.length ? `Includes: ${merged.map((project) => project.name).join(", ")}` : ""
+    missing ? t("projects.folderMissingHint") : "",
+    merged?.length ? t("projects.includes", { names: merged.map((project) => project.name).join(", ") }) : ""
   ]
     .filter(Boolean)
     .join("\n");
@@ -223,11 +339,9 @@ function resumeHint(session) {
     return "";
   }
   if (session.source === "vscode") {
-    return session.resumeCommand
-      ? "Opens the chat's folder in VS Code; the chat is listed in VS Code's Chat view"
-      : "This chat has no folder to open";
+    return session.resumeCommand ? t("footer.openInVsCode") : t("footer.noFolder");
   }
-  return session.cwd ? `Run from ${session.cwd}` : "";
+  return session.cwd ? t("footer.runFrom", { folder: session.cwd }) : "";
 }
 
 function renderList() {
@@ -238,7 +352,7 @@ function renderList() {
   renderProjectOptions();
   const hits = visibleHits();
   const total = state.hits.length;
-  el.count.textContent = hits.length === total ? `${total}` : `${hits.length} of ${total}`;
+  el.count.textContent = hits.length === total ? `${total}` : t("header.countFiltered", { shown: hits.length, total });
 
   if (!hits.some((hit) => hit.id === state.selectedId)) {
     state.selectedId = null;
@@ -248,25 +362,25 @@ function renderList() {
     .map((hit) => {
       const meta = [];
       if (!state.project) {
-        meta.push(`<span class="repo" title="${escapeHtml(hit.project.detail)}">${escapeHtml(hit.project.name)}</span>`);
+        meta.push(`<span class="repo" dir="auto" title="${escapeHtml(hit.project.detail)}">${escapeHtml(hit.project.name)}</span>`);
       }
       if (hit.additions || hit.deletions) {
         meta.push(
-          `<span><span class="added">+${hit.additions ?? 0}</span> <span class="deleted">-${hit.deletions ?? 0}</span></span>`
+          `<span dir="ltr"><span class="added">+${hit.additions ?? 0}</span> <span class="deleted">-${hit.deletions ?? 0}</span></span>`
         );
       }
       meta.push(`<span>${escapeHtml(relativeTime(hit.updatedAt))}</span>`);
       const badges = [
-        hit.inUse ? '<span class="badge live">In use</span>' : "",
+        hit.inUse ? `<span class="badge live">${escapeHtml(t("badge.inUse"))}</span>` : "",
         hit.source === "vscode"
-          ? `<span class="badge vscode" title="${escapeHtml(hit.protection ?? "")}">VS Code chat</span>`
+          ? `<span class="badge vscode" title="${escapeHtml(hit.protection ?? "")}">${escapeHtml(t("badge.vscodeChat"))}</span>`
           : hit.protection
-            ? `<span class="badge protected" title="${escapeHtml(hit.protection)}">Protected</span>`
+            ? `<span class="badge protected" title="${escapeHtml(hit.protection)}">${escapeHtml(t("badge.protected"))}</span>`
             : "",
-        hit.done ? '<span class="badge">Done</span>' : ""
+        hit.done ? `<span class="badge">${escapeHtml(t("badge.done"))}</span>` : ""
       ].join("");
       const snippet = hit.snippet
-        ? `<div class="item-snippet"><span class="role">${hit.snippet.role === "user" ? "You" : "Copilot"}:</span> ${highlight(hit.snippet.text, terms)}</div>`
+        ? `<div class="item-snippet"><span class="role">${escapeHtml(roleLabel(hit.snippet.role))}:</span> <bdi>${highlight(hit.snippet.text, terms)}</bdi></div>`
         : "";
       const classes = [
         "session-item",
@@ -277,7 +391,7 @@ function renderList() {
       return `<li class="${classes}" role="option" data-id="${hit.id}" aria-selected="${hit.id === state.selectedId}" title="${escapeHtml(hit.title)}">
         <span class="bullet"></span>
         <div>
-          <div class="item-title">${highlight(hit.title, terms)}</div>
+          <div class="item-title" dir="auto">${highlight(hit.title, terms)}</div>
           ${snippet}
           <div class="item-meta">${meta.join("<span>·</span>")}${badges}</div>
         </div>
@@ -286,37 +400,42 @@ function renderList() {
     .join("");
 
   el.listEmpty.hidden = hits.length > 0;
-  el.listEmpty.textContent = terms.length || state.project ? "No sessions match your filter." : "No sessions found.";
+  el.listEmpty.textContent = terms.length || state.project ? t("list.noMatches") : t("list.empty");
   if (!state.selectedId) {
     showNoSelection();
   }
 }
 
+function roleLabel(role) {
+  return role === "user" ? t("role.user") : t("role.assistant");
+}
+
 function showNoSelection() {
   state.selectedSession = null;
   state.chatSessionId = null;
+  state.chatDetail = null;
   el.chatHeader.hidden = true;
-  el.chat.innerHTML = '<div class="empty">Select a session to view the conversation.</div>';
+  el.chat.innerHTML = `<div class="empty">${escapeHtml(t("chat.selectSession"))}</div>`;
   updateFooter();
 }
 
 function updateFooter() {
   const session = state.selectedSession;
-  el.resumeCommand.textContent = session ? resumeCommand(session) || "No command available" : "No session selected";
+  el.resumeCommand.textContent = session ? resumeCommand(session) || t("footer.noCommand") : t("footer.noSession");
   el.resumeCommand.title = resumeHint(session);
   el.copyResume.disabled = !session?.resumeCommand;
   el.delete.disabled = !session || session.inUse || Boolean(session.protection);
   el.delete.title = session?.protection
-    ? `Protected: ${session.protection}`
+    ? t("footer.protected", { reason: session.protection })
     : session?.inUse
-      ? "This session is currently in use"
-      : "Delete session";
+      ? t("footer.inUse")
+      : t("footer.delete");
   el.setDone.classList.toggle("active", Boolean(session?.done));
   el.setDone.title = session?.protection
-    ? `Protected: ${session.protection}`
+    ? t("footer.protected", { reason: session.protection })
     : session?.done
-      ? "Done (set in VS Code)"
-      : "Set as done (only available in VS Code for now)";
+      ? t("footer.doneInVsCode")
+      : t("footer.setDoneHint");
 }
 
 async function runSearch({ keepSelection = true, rehighlight = true } = {}) {
@@ -336,7 +455,7 @@ async function runSearch({ keepSelection = true, rehighlight = true } = {}) {
       highlightChat();
     }
   } catch (error) {
-    showToast(`Search failed: ${error}`, true);
+    showToast(t("toast.searchFailed", { error }), true);
   }
 }
 
@@ -378,7 +497,7 @@ async function selectSession(id, { focusList = false, silent = false } = {}) {
     updateFooter();
   } catch (error) {
     if (!silent) {
-      showToast(`Unable to open session: ${error}`, true);
+      showToast(t("toast.openFailed", { error }), true);
     }
   }
 }
@@ -387,9 +506,14 @@ function renderChatHeader(detail) {
   const { session, messages } = detail;
   el.chatHeader.hidden = false;
   el.chatTitle.textContent = session.title;
-  const meta = [session.repository || session.cwd, session.branch, formatDate(session.createdAt), `${messages.length} messages`]
+  const meta = [
+    session.repository || session.cwd,
+    session.branch,
+    formatDate(session.createdAt),
+    t("chat.messageCount", { count: messages.length })
+  ]
     .filter(Boolean)
-    .map(escapeHtml);
+    .map((part) => `<bdi>${escapeHtml(part)}</bdi>`);
   el.chatMeta.innerHTML = meta.join(" · ");
   el.chatMeta.title = `${session.id}${session.cwd ? `\n${session.cwd}` : ""}`;
 }
@@ -402,19 +526,19 @@ function renderChat(detail, { preserveScroll = false } = {}) {
   renderChatHeader(detail);
   state.chatSessionId = session.id;
   state.chatMessageCount = messages.length;
+  state.chatDetail = detail;
   const fragment = document.createDocumentFragment();
   messages.forEach((message, index) => {
     const article = document.createElement("article");
     article.className = `message ${message.role}`;
     article.dataset.index = String(index);
-    const role = message.role === "user" ? "You" : "Copilot";
     article.innerHTML = `
       <div class="message-header">
-        <span class="role">${icon(message.role === "user" ? "user" : "copilot")}${role}</span>
+        <span class="role">${icon(message.role === "user" ? "user" : "copilot")}${escapeHtml(roleLabel(message.role))}</span>
         <span title="${escapeHtml(formatDate(message.timestamp))}">${escapeHtml(relativeTime(message.timestamp))}</span>
       </div>
-      <button class="icon-button copy-message" type="button" title="Copy message">${icon("copy")}</button>
-      <div class="message-body markdown">${renderMarkdown(message.content)}</div>`;
+      <button class="icon-button copy-message" type="button" title="${escapeHtml(t("chat.copyMessage"))}">${icon("copy")}</button>
+      <div class="message-body markdown" dir="auto">${renderMarkdown(message.content)}</div>`;
     article.querySelector(".copy-message").addEventListener("click", (event) => {
       copyText(message.content, event.currentTarget);
     });
@@ -597,7 +721,7 @@ function renderMarkdown(source) {
         listType = type;
       }
       const indent = Math.min(4, Math.floor(item[1].replace(/\t/g, "  ").length / 2));
-      const style = indent ? ` style="margin-left:${indent * 18}px"` : "";
+      const style = indent ? ` style="margin-inline-start:${indent * 18}px"` : "";
       html.push(`<li${style}>${inlineMarkdown(item[4])}</li>`);
       continue;
     }
@@ -628,7 +752,7 @@ async function copyText(text, button) {
       const copied = document.execCommand("copy");
       area.remove();
       if (!copied) {
-        throw new Error("Clipboard is unavailable");
+        throw new Error(t("toast.clipboardUnavailable"));
       }
     }
     if (button) {
@@ -640,7 +764,7 @@ async function copyText(text, button) {
       }, 1200);
     }
   } catch (error) {
-    showToast(`Copy failed: ${error}`, true);
+    showToast(t("toast.copyFailed", { error }), true);
   }
 }
 
@@ -664,7 +788,7 @@ async function refresh({ silent = false } = {}) {
   el.refresh.disabled = !silent;
   if (!state.hits.length && !silent) {
     el.listEmpty.hidden = false;
-    el.listEmpty.textContent = "Indexing sessions…";
+    el.listEmpty.textContent = t("list.indexing");
   }
   try {
     await invoke("refresh_sessions");
@@ -677,8 +801,8 @@ async function refresh({ silent = false } = {}) {
       console.warn("Automatic refresh failed", error);
     } else {
       el.listEmpty.hidden = false;
-      el.listEmpty.textContent = "Unable to load sessions.";
-      showToast(`Refresh failed: ${error}`, true);
+      el.listEmpty.textContent = t("list.loadFailed");
+      showToast(t("toast.refreshFailed", { error }), true);
     }
   } finally {
     state.refreshing = false;
@@ -696,7 +820,7 @@ function openDeleteDialog() {
     return;
   }
   if (session.protection) {
-    showToast(`Protected: ${session.protection}`);
+    showToast(t("footer.protected", { reason: session.protection }));
     return;
   }
   el.dialogText.innerHTML = `<strong>${escapeHtml(session.title)}</strong><br><code>${escapeHtml(session.id)}</code>`;
@@ -716,19 +840,21 @@ async function openMergeDialog() {
   try {
     projects = await invoke("list_projects");
   } catch (error) {
-    showToast(`Unable to load projects: ${error}`, true);
+    showToast(t("toast.projectsFailed", { error }), true);
     return;
   }
   const source = projects.find((project) => project.key === state.project);
   if (!source) {
-    showToast("This project has no sessions any more.");
+    showToast(t("toast.projectGone"));
     return;
   }
+  const name = [
+    `<strong>${escapeHtml(source.name)}</strong>`,
+    source.detail ? ` <span class="merged-detail">(${escapeHtml(source.detail)})</span>` : ""
+  ].join("");
   el.mergeText.innerHTML = [
-    `Group the sessions of <strong>${escapeHtml(source.name)}</strong>`,
-    source.detail ? ` <span class="merged-detail">(${escapeHtml(source.detail)})</span>` : "",
-    " under another project, for example after the repository was renamed or moved.",
-    source.missing ? "<br>Its folder no longer exists." : ""
+    tHtml("merge.text", { name }),
+    source.missing ? `<br>${tHtml("merge.folderGone")}` : ""
   ].join("");
 
   // Projects with an existing folder first, most recently used first: the likely new name.
@@ -736,9 +862,9 @@ async function openMergeDialog() {
     .filter((project) => project.key !== source.key && isMergeable(project.key))
     .sort((a, b) => Number(a.missing) - Number(b.missing) || (b.updatedAt || "").localeCompare(a.updatedAt || ""));
   el.mergeTarget.innerHTML = [
-    '<option value="">Choose a project…</option>',
+    `<option value="">${escapeHtml(t("merge.choose"))}</option>`,
     ...targets.map((project) => {
-      const notes = [`${project.sessions}`, project.missing ? "folder missing" : "", relativeTime(project.updatedAt)].filter(Boolean);
+      const notes = [`${project.sessions}`, project.missing ? t("projects.folderMissing") : "", relativeTime(project.updatedAt)].filter(Boolean);
       return `<option value="${escapeHtml(project.key)}" title="${escapeHtml(project.detail)}">${escapeHtml(project.name)} (${escapeHtml(notes.join(" · "))})</option>`;
     })
   ].join("");
@@ -751,7 +877,7 @@ async function openMergeDialog() {
       (project) => `<li>
         <span class="merged-name" title="${escapeHtml(project.detail)}">${escapeHtml(project.name)}
           <span class="merged-detail">${escapeHtml(project.detail)}</span></span>
-        <button class="button secondary" type="button" data-key="${escapeHtml(project.key)}">Unmerge</button>
+        <button class="button secondary" type="button" data-key="${escapeHtml(project.key)}">${escapeHtml(t("merge.unmerge"))}</button>
       </li>`
     )
     .join("");
@@ -762,6 +888,45 @@ async function openMergeDialog() {
 
 function closeMergeDialog() {
   el.mergeDialog.hidden = true;
+}
+
+function openSettingsDialog() {
+  el.languageSelect.innerHTML = i18n.languages
+    .map(
+      ({ code, name, dir }) =>
+        `<option value="${escapeHtml(code)}" lang="${escapeHtml(code)}" dir="${dir === "rtl" ? "rtl" : "ltr"}">${escapeHtml(name)}</option>`
+    )
+    .join("");
+  el.languageSelect.value = i18n.code;
+  el.languageSelect.disabled = !i18n.languages.length;
+  el.settingsDialog.hidden = false;
+  el.languageSelect.focus();
+}
+
+function closeSettingsDialog() {
+  el.settingsDialog.hidden = true;
+}
+
+async function changeLanguage(code) {
+  try {
+    await setLanguage(code);
+    localStorage.setItem("language", code);
+  } catch (error) {
+    el.languageSelect.value = i18n.code;
+    showToast(t("toast.languageFailed", { error }), true);
+    return;
+  }
+  updateToggleDoneTitle();
+  renderList();
+  updateFooter();
+  if (state.chatDetail) {
+    renderChat(state.chatDetail, { preserveScroll: true });
+  }
+}
+
+function updateToggleDoneTitle() {
+  el.toggleDone.setAttribute("aria-pressed", String(state.showDone));
+  el.toggleDone.title = state.showDone ? t("header.hideDone") : t("header.showDone");
 }
 
 async function mergeSelectedProject() {
@@ -775,9 +940,9 @@ async function mergeSelectedProject() {
     setProject(key);
     closeMergeDialog();
     await runSearch();
-    showToast("Projects merged");
+    showToast(t("toast.merged"));
   } catch (error) {
-    showToast(`Merge failed: ${error}`, true);
+    showToast(t("toast.mergeFailed", { error }), true);
     el.mergeConfirm.disabled = false;
   }
 }
@@ -787,10 +952,10 @@ async function unmergeProject(key, button) {
   try {
     await invoke("unmerge_project", { key });
     await runSearch();
-    showToast("Project unmerged");
+    showToast(t("toast.unmerged"));
     await openMergeDialog();
   } catch (error) {
-    showToast(`Unmerge failed: ${error}`, true);
+    showToast(t("toast.unmergeFailed", { error }), true);
     button.disabled = false;
   }
 }
@@ -812,9 +977,9 @@ async function deleteSelected() {
     if (state.selectedId) {
       await selectSession(state.selectedId);
     }
-    showToast("Session deleted");
+    showToast(t("toast.deleted"));
   } catch (error) {
-    showToast(`Delete failed: ${error}`, true);
+    showToast(t("toast.deleteFailed", { error }), true);
   } finally {
     el.dialogConfirm.disabled = false;
   }
@@ -844,7 +1009,9 @@ function setupSplitter() {
       return;
     }
     const bounds = el.columns.getBoundingClientRect();
-    const width = Math.round(Math.max(200, Math.min(bounds.width - 300, event.clientX - bounds.left)));
+    // In right-to-left layouts the list pane sits on the right.
+    const offset = i18n.dir === "rtl" ? bounds.right - event.clientX : event.clientX - bounds.left;
+    const width = Math.round(Math.max(200, Math.min(bounds.width - 300, offset)));
     el.columns.style.setProperty("--list-width", `${width}px`);
     localStorage.setItem("listWidth", String(width));
   });
@@ -892,8 +1059,7 @@ function bindEvents() {
   el.toggleDone.addEventListener("click", () => {
     state.showDone = !state.showDone;
     localStorage.setItem("showDone", String(state.showDone));
-    el.toggleDone.setAttribute("aria-pressed", String(state.showDone));
-    el.toggleDone.title = state.showDone ? "Hide sessions marked as done" : "Show sessions marked as done";
+    updateToggleDoneTitle();
     renderList();
   });
   el.copyResume.addEventListener("click", (event) => {
@@ -926,11 +1092,21 @@ function bindEvents() {
       closeDeleteDialog();
     }
   });
+  el.settings.addEventListener("click", openSettingsDialog);
+  el.settingsClose.addEventListener("click", closeSettingsDialog);
+  el.languageSelect.addEventListener("change", () => changeLanguage(el.languageSelect.value));
+  el.settingsDialog.addEventListener("click", (event) => {
+    if (event.target === el.settingsDialog) {
+      closeSettingsDialog();
+    }
+  });
   document.addEventListener("keydown", (event) => {
     if (!el.dialog.hidden && event.key === "Escape") {
       closeDeleteDialog();
     } else if (!el.mergeDialog.hidden && event.key === "Escape") {
       closeMergeDialog();
+    } else if (!el.settingsDialog.hidden && event.key === "Escape") {
+      closeSettingsDialog();
     } else if ((event.ctrlKey || event.metaKey) && ["f", "k"].includes(event.key.toLowerCase())) {
       event.preventDefault();
       el.search.focus();
@@ -942,15 +1118,16 @@ function bindEvents() {
   });
 }
 
-function init() {
+async function init() {
   hydrateIcons();
-  el.toggleDone.setAttribute("aria-pressed", String(state.showDone));
-  el.toggleDone.title = state.showDone ? "Hide sessions marked as done" : "Show sessions marked as done";
+  await initI18n();
+  updateToggleDoneTitle();
   setupSplitter();
   bindEvents();
   if (!invoke) {
     el.listEmpty.hidden = false;
-    el.listEmpty.textContent = "Run this page inside the Tauri app.";
+    // Locale files cannot be fetched from file:// pages, so keep an English fallback here.
+    el.listEmpty.textContent = hasTranslation("app.notInTauri") ? t("app.notInTauri") : "Run this page inside the Tauri app.";
     return;
   }
   refresh();

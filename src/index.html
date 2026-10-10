@@ -10,15 +10,18 @@
     <div class="app">
       <header class="titlebar">
         <div class="heading">
-          <span class="title">Sessions</span>
+          <span class="title" data-i18n="header.sessions">Sessions</span>
           <span id="count" class="count"></span>
         </div>
         <div class="actions">
           <button id="toggle-done" class="icon-button" type="button" aria-pressed="false" title="Show sessions marked as done">
             <span data-icon="checkAll"></span>
           </button>
-          <button id="refresh" class="icon-button" type="button" title="Refresh sessions (F5)">
+          <button id="refresh" class="icon-button" type="button" title="Refresh sessions (F5)" data-i18n-title="header.refresh">
             <span data-icon="refresh"></span>
+          </button>
+          <button id="settings" class="icon-button" type="button" title="Settings" data-i18n-title="header.settings">
+            <span data-icon="gear"></span>
           </button>
         </div>
       </header>
@@ -30,14 +33,15 @@
             id="search"
             type="text"
             placeholder="Filter by title or message (Ctrl+F)"
+            data-i18n-placeholder="search.placeholder"
             spellcheck="false"
             autocomplete="off"
           />
-          <button id="clear-search" class="icon-button small" type="button" title="Clear (Esc)" hidden>
+          <button id="clear-search" class="icon-button small" type="button" title="Clear (Esc)" data-i18n-title="search.clear" hidden>
             <span data-icon="close"></span>
           </button>
         </label>
-        <select id="project-filter" class="select" aria-label="Filter by repository" title="Filter by repository or folder">
+        <select id="project-filter" class="select" aria-label="Filter by repository" data-i18n-aria-label="projects.ariaLabel" title="Filter by repository or folder">
           <option value="">All repositories</option>
         </select>
         <button id="merge-project" class="icon-button" type="button" title="Merge project into another (renamed or moved repository)" disabled>
@@ -46,18 +50,18 @@
       </div>
 
       <main id="columns" class="columns">
-        <aside class="session-pane" aria-label="Sessions">
+        <aside class="session-pane" aria-label="Sessions" data-i18n-aria-label="list.ariaLabel">
           <ul id="session-list" class="session-list" role="listbox" tabindex="0"></ul>
           <div id="list-empty" class="empty" hidden></div>
         </aside>
-        <div id="splitter" class="splitter" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
-        <section class="chat-pane" aria-label="Conversation">
+        <div id="splitter" class="splitter" role="separator" aria-orientation="vertical" title="Drag to resize" data-i18n-title="splitter.title"></div>
+        <section class="chat-pane" aria-label="Conversation" data-i18n-aria-label="chat.ariaLabel">
           <div id="chat-header" class="chat-header" hidden>
-            <div id="chat-title" class="chat-title"></div>
+            <div id="chat-title" class="chat-title" dir="auto"></div>
             <div id="chat-meta" class="chat-meta"></div>
           </div>
           <div id="chat" class="chat">
-            <div class="empty">Select a session to view the conversation.</div>
+            <div class="empty" data-i18n="chat.selectSession">Select a session to view the conversation.</div>
           </div>
         </section>
       </main>
@@ -65,8 +69,8 @@
       <footer class="statusbar">
         <div class="resume">
           <span class="prompt" data-icon="terminal"></span>
-          <code id="resume-command" class="resume-command">No session selected</code>
-          <button id="copy-resume" class="icon-button" type="button" title="Copy resume command" disabled>
+          <code id="resume-command" class="resume-command" dir="ltr">No session selected</code>
+          <button id="copy-resume" class="icon-button" type="button" title="Copy resume command" data-i18n-title="footer.copyResume" disabled>
             <span data-icon="copy"></span>
           </button>
         </div>
@@ -77,6 +81,7 @@
             type="button"
             title="Set as done (only available in VS Code for now)"
             aria-label="Set as done"
+            data-i18n-aria-label="footer.setDone"
             disabled
           >
             <span data-icon="check"></span>
@@ -90,32 +95,45 @@
 
     <div id="dialog-backdrop" class="dialog-backdrop" hidden>
       <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
-        <h2 id="dialog-title">Delete session?</h2>
+        <h2 id="dialog-title" data-i18n="delete.title">Delete session?</h2>
         <p id="dialog-text"></p>
-        <p class="dialog-warning">This permanently removes the session folder. It cannot be undone.</p>
+        <p class="dialog-warning" data-i18n="delete.warning">This permanently removes the session folder. It cannot be undone.</p>
         <div class="dialog-buttons">
-          <button id="dialog-cancel" class="button secondary" type="button">Cancel</button>
-          <button id="dialog-confirm" class="button danger" type="button">Delete</button>
+          <button id="dialog-cancel" class="button secondary" type="button" data-i18n="dialog.cancel">Cancel</button>
+          <button id="dialog-confirm" class="button danger" type="button" data-i18n="delete.confirm">Delete</button>
         </div>
       </div>
     </div>
 
     <div id="merge-backdrop" class="dialog-backdrop" hidden>
       <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="merge-title">
-        <h2 id="merge-title">Merge project</h2>
+        <h2 id="merge-title" data-i18n="merge.title">Merge project</h2>
         <p id="merge-text"></p>
         <label class="field">
-          <span>Show its sessions under</span>
+          <span data-i18n="merge.targetLabel">Show its sessions under</span>
           <select id="merge-target" class="select"></select>
         </label>
         <div id="merged-section" class="merged-section" hidden>
-          <p>Merged into this project:</p>
+          <p data-i18n="merge.mergedInto">Merged into this project:</p>
           <ul id="merged-list" class="merged-list"></ul>
         </div>
-        <p class="dialog-warning">This only changes grouping in this app. No files are moved or changed.</p>
+        <p class="dialog-warning" data-i18n="merge.warning">This only changes grouping in this app. No files are moved or changed.</p>
         <div class="dialog-buttons">
-          <button id="merge-cancel" class="button secondary" type="button">Close</button>
-          <button id="merge-confirm" class="button primary" type="button" disabled>Merge</button>
+          <button id="merge-cancel" class="button secondary" type="button" data-i18n="dialog.close">Close</button>
+          <button id="merge-confirm" class="button primary" type="button" data-i18n="merge.confirm" disabled>Merge</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="settings-backdrop" class="dialog-backdrop" hidden>
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <h2 id="settings-title" data-i18n="settings.title">Settings</h2>
+        <label class="field">
+          <span data-i18n="settings.language">Language</span>
+          <select id="language-select" class="select"></select>
+        </label>
+        <div class="dialog-buttons">
+          <button id="settings-close" class="button secondary" type="button" data-i18n="dialog.close">Close</button>
         </div>
       </div>
     </div>

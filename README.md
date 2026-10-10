@@ -44,6 +44,22 @@ local GitHub Copilot (CLI / VS Code agent) sessions. Styled after VS Code Dark M
   (debounced, at most every 5 s), with a 45 s polling fallback (e.g. for **In use** locks released
   by exiting processes, or chats archived in VS Code). The open chat keeps its scroll position, or
   follows new messages when scrolled to the bottom.
+- Localized UI: English (default), German, French, Spanish, Italian, Portuguese (Brazil), Swedish,
+  Chinese (Simplified), Japanese, Korean, Vietnamese, Thai, Hebrew and Arabic (right-to-left
+  layout). On first start the language follows the OS/WebView language (falling back to English);
+  change it with the cog button in the header. Dates and relative times use the selected locale.
+  Messages from the backend (errors, protection reasons) are English.
+
+## Translations
+
+UI strings live in `src/locales/<code>.json` (flat `key: text` objects, `{name}` placeholders) and
+the language list in `src/locales/languages.json` (`code`, native `name`, optional `"dir": "rtl"`).
+`en-us.json` is the default and the reference. In the frontend, use `t("key", { name })` in
+`main.js` and `data-i18n` / `data-i18n-title` / `data-i18n-placeholder` / `data-i18n-aria-label`
+attributes in `index.html`. To add a language, add its JSON file and an entry in `languages.json`.
+`cargo test --test locales` checks that every language has exactly the keys and placeholders of
+`en-us.json`, that `languages.json` matches the files, and that every key used in the frontend
+exists (and every key is used).
 
 Keyboard: `Ctrl+F` / `Ctrl+K` focus search, `Esc` clear, `Up` / `Down` move, `Enter` open,
 `Delete` delete, `F5` refresh.

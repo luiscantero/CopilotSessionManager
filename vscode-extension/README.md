@@ -1,23 +1,36 @@
-# Session Manager for GitHub Copilot (VS Code extension)
+# Session Manager for GitHub Copilot
 
-Full-text search across your local **GitHub Copilot CLI sessions** and **VS Code chats**, right
-inside VS Code. It is the [Session Manager for GitHub Copilot](https://github.com/luiscantero/CopilotSessionSearch)
-desktop app packaged as an extension: the same Rust search backend and the same UI, themed like
-your editor. Unofficial; not affiliated with GitHub or Microsoft.
+**Search, resume and clean up your GitHub Copilot CLI sessions and VS Code chats.** Full-text
+search across every session and message on your machine, in milliseconds.
+
+> Unofficial extension, not affiliated with GitHub or Microsoft.
+
+## Why
+
+Copilot CLI sessions pile up in `~/.copilot/session-state`, and VS Code keeps chats per workspace,
+so finding "that conversation where we fixed the build" means guessing the folder and scrolling.
+This extension puts all of them in one searchable list, wherever they were started:
+
+- **Copilot CLI first**: resume any CLI session in a terminal with one click, see which sessions
+  are in use by a running Copilot process, and open CLI sessions in VS Code's Chat view.
+- **VS Code chats from every workspace**, not only the one you have open.
+- **Clean up safely**: delete old sessions and chats, with guards for sessions that are in use,
+  owned by other apps, or still open in a VS Code window.
+- **Organized by repository**, with merging for repositories that were renamed or moved.
 
 ## Features
 
-- **Quick search** (`Ctrl+Alt+F`, `Cmd+Alt+F` on macOS, or *Session Manager for GitHub Copilot: Search
-  Sessions…*): type to search session titles and every user and Copilot message. All terms must
-  match (case-insensitive). Results show the project, age, badges and the matching message.
+- **Quick search** (`Ctrl+Alt+F`, `Cmd+Alt+F` on macOS, or *Session Manager for GitHub Copilot:
+  Search Sessions…*): type to search session titles and every user and Copilot message. All terms
+  must match (case-insensitive). Results show the project, age, badges and the matching message.
   - `Enter` shows the conversation in the session browser (configurable, see below).
   - Item buttons: **Resume in terminal** (Copilot CLI sessions), **Open in VS Code chat** and
     **Copy resume command**.
   - Title buttons: show or hide sessions marked as done, and open the session browser.
-- **Session browser** (*Session Manager for GitHub Copilot: Open Session Browser*): a session list and a
-  conversation reader in an editor tab, with highlighting of matches, a repository filter,
-  project merging for renamed or moved repositories, copy buttons and delete. It updates
-  automatically while sessions change on disk.
+- **Session browser** (*Session Manager for GitHub Copilot: Open Session Browser*): a session list
+  and a conversation reader in an editor tab, themed like your editor, with highlighted matches, a
+  repository filter, project merging, copy buttons and delete. It updates automatically while
+  sessions change on disk.
 - **Resume in terminal**: opens a terminal in the session's folder and runs
   `copilot --resume=<id>`. Asks first if the session is in use by another Copilot process.
 - **Open in VS Code chat**:
@@ -26,19 +39,29 @@ your editor. Unofficial; not affiliated with GitHub or Microsoft.
     is listed in the Chat view's history (VS Code only shows the chats of the open workspace).
   - Copilot CLI sessions open as Copilot CLI chat sessions (requires the GitHub Copilot Chat
     extension).
+- **Delete**: removes Copilot CLI session folders, and VS Code chats the way VS Code does (chat
+  file, editing session and their entries in the workspace database). Sessions in use, owned by
+  other apps (for example Windows Terminal Agent), or whose VS Code window is open cannot be
+  deleted.
+- **14 UI languages** in the session browser, including right-to-left layouts.
+
+## Privacy
+
+Everything runs locally. There is no telemetry and nothing is sent over the network. Session files
+are only read, except when you confirm **Delete** or merge projects.
 
 ## How it works
 
-The extension starts a small native backend (`bin/copilot-session-manager-sidecar`) and talks to it
-with JSON lines over stdio. The backend keeps an in-memory index of
-`~/.copilot/session-state/*/events.jsonl` and VS Code's chat storage. The first search after
-starting indexes everything (a few seconds for about a thousand sessions); after that, only
-changed files are read again, and a file watcher reports changes. Searches take milliseconds. Nothing is
-written to disk except when you delete a session or merge projects. The backend stops after 10
-minutes without use while no session browser is open.
+The extension starts a small native backend (`bin/copilot-session-manager-sidecar`, written in
+Rust) on first use and talks to it with JSON lines over stdio. The backend keeps an in-memory index
+of `~/.copilot/session-state/*/events.jsonl` and VS Code's chat storage. The first search indexes
+everything (a few seconds for about a thousand sessions); after that, only changed files are read
+again, and a file watcher reports changes. The backend stops after 10 minutes without use while no
+session browser is open.
 
-Project merges are shared with the desktop app (`project-merges.json` in
-`%APPDATA%/com.luiscantero.copilot-session-manager` on Windows).
+There is also a standalone [desktop app](https://github.com/luiscantero/CopilotSessionSearch) with
+the same features, for use without VS Code. Project merges are shared with it
+(`project-merges.json` in `%APPDATA%/com.luiscantero.copilot-session-manager` on Windows).
 
 ## Settings
 
@@ -47,6 +70,15 @@ Project merges are shared with the desktop app (`project-merges.json` in
 | `copilotSessionManager.quickPick.defaultAction` | `showConversation` | What `Enter` does in the quick search: `showConversation`, `resume` or `openInChat`. |
 | `copilotSessionManager.copilotCommand` | `copilot` | Command used to resume Copilot CLI sessions (`--resume=<id>` is appended). |
 | `copilotSessionManager.sidecarPath` | | Path to a custom build of the backend. |
+
+## Limitations
+
+- *Set as done* is display-only: VS Code owns that state, so mark sessions as done in VS Code.
+- Session paths assume the default VS Code (stable) profile.
+- VS Code chats of the workspace you have open cannot be deleted, because VS Code would write
+  them back; use the desktop app with VS Code closed.
+- Opening Copilot CLI sessions in the Chat view relies on the GitHub Copilot Chat extension's
+  `copilotcli` chat session provider.
 
 ## Build from source
 
@@ -67,9 +99,7 @@ For development, run `npm run build` once, then `npm run watch`, and start VS Co
 `code --extensionDevelopmentPath=<this folder>`.
 The UI files in `media/app` are copied from `../src` by `npm run build:assets`.
 
-## Limitations
+## Feedback
 
-- Same as the desktop app: *Set as done* is display-only, and session paths assume the default VS
-  Code (stable) profile.
-- Opening Copilot CLI sessions in the Chat view relies on the Copilot Chat extension's
-  `copilotcli` chat session provider.
+Report issues and ideas at
+[github.com/luiscantero/CopilotSessionSearch/issues](https://github.com/luiscantero/CopilotSessionSearch/issues).

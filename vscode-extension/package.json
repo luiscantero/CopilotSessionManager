@@ -1,7 +1,7 @@
 {
   "name": "copilot-session-manager",
   "displayName": "Session Manager for GitHub Copilot",
-  "description": "Full-text search across your local GitHub Copilot CLI sessions and VS Code chats. Read, resume, open, merge and delete them.",
+  "description": "Search, resume and clean up your GitHub Copilot CLI sessions and VS Code chats. Full-text, local and fast.",
   "version": "0.3.0",
   "publisher": "luiscantero",
   "license": "MIT",
@@ -10,6 +10,10 @@
     "type": "git",
     "url": "https://github.com/luiscantero/CopilotSessionSearch"
   },
+  "bugs": {
+    "url": "https://github.com/luiscantero/CopilotSessionSearch/issues"
+  },
+  "homepage": "https://github.com/luiscantero/CopilotSessionSearch#readme",
   "engines": {
     "vscode": "^1.100.0"
   },
@@ -20,10 +24,18 @@
   ],
   "keywords": [
     "copilot",
+    "copilot-cli",
+    "github-copilot",
     "chat",
+    "chat-history",
     "session",
+    "sessions",
     "history",
-    "search"
+    "search",
+    "full-text",
+    "resume",
+    "agent",
+    "conversation"
   ],
   "main": "./out/extension.js",
   "activationEvents": [

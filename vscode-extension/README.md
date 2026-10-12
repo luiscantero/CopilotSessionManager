@@ -47,12 +47,17 @@ This extension puts all of them in one searchable list, wherever they were start
   file, editing session and their entries in the workspace database). Sessions in use, owned by
   other apps (for example Windows Terminal Agent), or whose VS Code window is open cannot be
   deleted.
+- **Merge projects** of renamed or moved repositories. A merge groups the old project's sessions
+  under the new one; optionally it also moves them to the new project's folder, so VS Code and
+  the Copilot CLI list them there too (VS Code chats only while neither folder is open in VS
+  Code). Unmerging moves them back.
 - **14 UI languages** in the session browser, including right-to-left layouts.
 
 ## Privacy
 
 Everything runs locally. There is no telemetry and nothing is sent over the network. Session files
-are only read, except when you confirm **Delete** or merge projects.
+are only read, except when you confirm **Delete** or merge projects and choose to move their
+sessions.
 
 ## How it works
 
@@ -83,6 +88,16 @@ the same features, for use without VS Code. Project merges are shared with it
   them back; use the desktop app with VS Code closed.
 - Opening Copilot CLI sessions in the Chat view relies on the GitHub Copilot Chat extension's
   `copilotcli` chat session provider.
+
+## Install
+
+Install the extension from the
+[Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=luiscantero.copilot-session-manager),
+search for **Session Manager for GitHub Copilot** in VS Code's Extensions view, or run:
+
+```powershell
+code --install-extension luiscantero.copilot-session-manager
+```
 
 ## Build from source
 

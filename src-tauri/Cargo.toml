@@ -28,6 +28,7 @@ tauri = { version = "2", features = [], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 serde_yaml = "0.9"
+sha2 = "0.10"
 rayon = "1"
 rusqlite = { version = "0.37", features = ["bundled"] }
 notify = "8.2.0"

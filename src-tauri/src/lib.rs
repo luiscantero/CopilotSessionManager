@@ -12,6 +12,7 @@ use std::time::{Duration, SystemTime};
 #[cfg(feature = "gui")]
 mod gui;
 mod project_merges;
+mod session_move;
 mod sidecar;
 mod vscode_chat;
 mod watcher;
@@ -73,7 +74,7 @@ struct Project {
     /// probably renamed or moved), so it is a candidate for merging into the new project.
     missing: bool,
     /// Projects merged into this one.
-    merged: Vec<project_merges::ProjectRef>,
+    merged: Vec<project_merges::MergedProject>,
 }
 
 #[derive(Serialize)]
@@ -746,7 +747,9 @@ fn folder_project(path: &str) -> Project {
 /// Groups sessions by repository. Sessions without repository metadata (for example started
 /// before the folder was a git repo, or in a subfolder) are matched to a known git root that
 /// contains their working directory, falling back to the working directory itself.
-fn assign_projects(entries: &mut [Entry]) {
+/// `moved_roots` are the (git root, repository) pairs of sessions moved by project merges, so
+/// that sessions left in such a root keep their repository.
+fn assign_projects(entries: &mut [Entry], moved_roots: &[(String, String)]) {
     let mut roots: HashMap<String, Project> = HashMap::new();
     for entry in entries.iter() {
         if let (Some(root), Some(repository)) = (&entry.git_root, &entry.summary.repository) {
@@ -754,6 +757,11 @@ fn assign_projects(entries: &mut [Entry]) {
                 .entry(normalize_path(root))
                 .or_insert_with(|| repository_project(repository));
         }
+    }
+    for (root, repository) in moved_roots {
+        roots
+            .entry(normalize_path(root))
+            .or_insert_with(|| repository_project(repository));
     }
     for entry in entries.iter() {
         if let (Some(root), None) = (&entry.git_root, &entry.summary.repository) {
@@ -900,7 +908,7 @@ fn rebuild(index: &mut Index) -> Result<(), String> {
         &mut index.vscode_chats,
         &vscode_config_dirs(),
     ));
-    assign_projects(&mut entries);
+    assign_projects(&mut entries, &index.merges.moved_roots());
     project_merges::apply(&mut entries, &index.merges);
     entries.sort_by(|a, b| b.summary.updated_at.cmp(&a.summary.updated_at));
     index.parsed = entries
@@ -1051,14 +1059,45 @@ fn list_project_infos(index: &Index) -> Vec<ProjectInfo> {
     projects
 }
 
+#[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MoveReport {
+    /// Folder the sessions were moved to.
+    folder: Option<String>,
+    moved: usize,
+    /// "<session>: <reason>" for each session that could not be moved.
+    skipped: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MergeResult {
+    /// Key of the resulting group.
+    key: String,
+    /// Result of moving the sessions, when requested.
+    report: Option<MoveReport>,
+}
+
+#[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UnmergeReport {
+    /// The merge was removed; false when sessions could not be moved back yet.
+    unmerged: bool,
+    restored: usize,
+    /// "<session>: <reason>" for each session that could not be moved back.
+    skipped: Vec<String>,
+}
+
 /// Groups the sessions of project `from` under project `into` (both current group keys) and
-/// saves the merges to `path`. Returns the key of the resulting group.
+/// saves the merges to `path`. With `move_sessions`, also moves the sessions to the folder of
+/// `into` (see [`move_merged_project`]).
 fn merge_projects(
     index: &mut Index,
     path: &Path,
     from: &str,
     into: &str,
-) -> Result<String, String> {
+    move_sessions: bool,
+) -> Result<MergeResult, String> {
     let find = |key: &str| {
         index
             .entries
@@ -1072,24 +1111,281 @@ fn merge_projects(
     if from.key == into.key {
         return Err("Choose a different project to merge into".to_string());
     }
+    let from_key = from.key.clone();
     let mut merges = index.merges.clone();
     merges.add(from, into.clone())?;
     merges.save(path)?;
     index.merges = merges;
     project_merges::apply(&mut index.entries, &index.merges);
-    Ok(into.key)
+    let report = move_sessions.then(|| {
+        move_merged_project(index, path, &from_key).unwrap_or_else(|err| MoveReport {
+            skipped: vec![err],
+            ..MoveReport::default()
+        })
+    });
+    Ok(MergeResult {
+        key: into.key,
+        report,
+    })
+}
+
+/// Title of session `id` for messages, shortened.
+fn session_label(index: &Index, id: &str) -> String {
+    const MAX_CHARS: usize = 60;
+    let Some(entry) = index.entries.iter().find(|entry| entry.summary.id == id) else {
+        return id.to_string();
+    };
+    let title = &entry.summary.title;
+    if title.chars().count() > MAX_CHARS {
+        format!("{}…", title.chars().take(MAX_CHARS).collect::<String>())
+    } else {
+        title.clone()
+    }
+}
+
+/// An existing local folder of project `key`, from its own sessions (not those of projects merged
+/// into it): a folder project's own folder, else the newest session's git root, else its working
+/// folder.
+fn project_folder(index: &Index, key: &str) -> Option<String> {
+    let entries: Vec<&Entry> = index
+        .entries
+        .iter()
+        .filter(|entry| entry.base_project.key == key)
+        .collect();
+    let own = key
+        .starts_with("path:")
+        .then(|| {
+            entries
+                .first()
+                .map(|entry| entry.base_project.detail.as_str())
+        })
+        .flatten();
+    own.into_iter()
+        .chain(entries.iter().filter_map(|entry| entry.git_root.as_deref()))
+        .chain(
+            entries
+                .iter()
+                .filter_map(|entry| entry.summary.cwd.as_deref()),
+        )
+        .find(|folder| Path::new(folder).is_absolute() && Path::new(folder).is_dir())
+        .map(str::to_owned)
+}
+
+/// Root folder of a session: its git root, else its folder project's folder, else its working
+/// folder.
+fn session_root_folder(entry: &Entry) -> Option<String> {
+    let cwd = entry.summary.cwd.as_deref();
+    let project = &entry.base_project;
+    entry
+        .git_root
+        .clone()
+        .or_else(|| {
+            let inside = cwd.is_some_and(|cwd| {
+                path_within(&normalize_path(cwd), &normalize_path(&project.detail)).is_some()
+            });
+            (project.key.starts_with("path:") && inside).then(|| project.detail.clone())
+        })
+        .or_else(|| cwd.map(str::to_owned))
+}
+
+/// Moves the sessions of merged project `key` to the folder of the project it is merged into,
+/// so that VS Code and the Copilot CLI list them there too, and records the moves in the merge
+/// so that [`unmerge_project`] can move them back. Sessions that cannot be moved now (in use,
+/// or open in VS Code) are skipped; moving again later picks them up.
+fn move_merged_project(index: &mut Index, path: &Path, key: &str) -> Result<MoveReport, String> {
+    if index.merges.find(key).is_none() {
+        return Err(format!("Project {key} is not merged"));
+    }
+    let final_key = index.merges.resolve(key).0;
+    let target = index
+        .entries
+        .iter()
+        .map(|entry| &entry.summary.project)
+        .find(|project| project.key == final_key)
+        .cloned()
+        .ok_or_else(|| "The project it is merged into has no sessions any more".to_string())?;
+    let folder = project_folder(index, &final_key).ok_or_else(|| {
+        format!(
+            "No folder of {} exists on this computer to move the sessions to",
+            target.name
+        )
+    })?;
+    let repository = final_key
+        .starts_with("repo:")
+        .then(|| target.detail.clone());
+    let config_dirs = vscode_config_dirs();
+    let root = session_root()?;
+
+    let mut report = MoveReport {
+        folder: Some(folder.clone()),
+        ..MoveReport::default()
+    };
+    let mut moved = Vec::new();
+    for entry in index
+        .entries
+        .iter()
+        .filter(|entry| entry.base_project.key == key)
+    {
+        let summary = &entry.summary;
+        let result = match session_root_folder(entry) {
+            None => Err("it has no folder".to_string()),
+            Some(_) if summary.protection.is_some() => {
+                Err(summary.protection.clone().unwrap_or_default())
+            }
+            Some(old_root) if summary.source == "vscode" => {
+                let mut folders: Vec<String> = summary
+                    .cwd
+                    .as_deref()
+                    .and_then(|cwd| session_move::relocate(cwd, &old_root, &folder))
+                    .into_iter()
+                    .collect();
+                if !folders.contains(&folder) {
+                    folders.push(folder.clone());
+                }
+                vscode_chat::move_chat(&config_dirs, &summary.id, &folders)
+                    .map(|done| {
+                        done.map(|(from_storage, into_storage)| {
+                            session_move::MovedSession::VscodeChat {
+                                id: summary.id.clone(),
+                                from_storage,
+                                into_storage,
+                            }
+                        })
+                    })
+                    .map_err(|err| err.reason().to_string())
+            }
+            Some(old_root) => {
+                let dir = root.join(&summary.id);
+                if normalize_path(&old_root) == normalize_path(&folder) {
+                    Ok(None)
+                } else if is_in_use(&dir) {
+                    Err("it is in use. Close it and try again.".to_string())
+                } else {
+                    session_move::move_cli_session(
+                        &dir,
+                        &config_dirs,
+                        &old_root,
+                        &folder,
+                        repository.as_deref(),
+                    )
+                    .map(Some)
+                }
+            }
+        };
+        match result {
+            Ok(Some(record)) => {
+                moved.push(record);
+                report.moved += 1;
+            }
+            Ok(None) => {}
+            Err(reason) => report
+                .skipped
+                .push(format!("{}: {reason}", session_label(index, &summary.id))),
+        }
+    }
+
+    let mut saved = Ok(());
+    if !moved.is_empty() {
+        let mut merges = index.merges.clone();
+        if let Some(merge) = merges.find_mut(key) {
+            merge.moved.extend(moved);
+        }
+        saved = merges.save(path);
+        index.merges = merges;
+    }
+    rebuild(index)?;
+    saved.map_err(|err| {
+        format!(
+            "Moved {} sessions, but could not record it, so unmerging cannot move them back: {err}",
+            report.moved
+        )
+    })?;
+    Ok(report)
 }
 
 /// Undoes the merge of project `key` (it becomes its own group again) and saves the merges.
-fn unmerge_project(index: &mut Index, path: &Path, key: &str) -> Result<(), String> {
-    let mut merges = index.merges.clone();
-    if !merges.remove(key) {
-        return Err(format!("Project {key} is not merged"));
+/// Moved sessions are moved back first; when some cannot be moved back now (in use, or open in
+/// VS Code), the project stays merged with those sessions so that unmerging can be retried.
+fn unmerge_project(index: &mut Index, path: &Path, key: &str) -> Result<UnmergeReport, String> {
+    let merge = index
+        .merges
+        .find(key)
+        .cloned()
+        .ok_or_else(|| format!("Project {key} is not merged"))?;
+    if merge.moved.is_empty() {
+        let mut merges = index.merges.clone();
+        merges.remove(key);
+        merges.save(path)?;
+        index.merges = merges;
+        project_merges::apply(&mut index.entries, &index.merges);
+        return Ok(UnmergeReport {
+            unmerged: true,
+            ..UnmergeReport::default()
+        });
     }
-    merges.save(path)?;
+
+    let config_dirs = vscode_config_dirs();
+    let root = session_root()?;
+    let mut report = UnmergeReport::default();
+    let mut kept = Vec::new();
+    for record in merge.moved.iter().rev() {
+        let moved_again = index.merges.merges.iter().find(|other| {
+            other.from.key != key && other.moved.iter().any(|later| record.continued_by(later))
+        });
+        let result = match record {
+            _ if moved_again.is_some() => Err(session_move::MoveError::Blocked(format!(
+                "it was moved again when merging {}. Unmerge that project first.",
+                moved_again.map_or("", |other| other.from.name.as_str())
+            ))),
+            session_move::MovedSession::Cli {
+                id,
+                before,
+                after,
+                agent_host,
+            } => {
+                let dir = root.join(id);
+                if is_in_use(&dir) {
+                    Err(session_move::MoveError::Blocked(
+                        "it is in use. Close it and try again.".to_string(),
+                    ))
+                } else {
+                    session_move::restore_cli_session(&dir, before, after, agent_host)
+                }
+            }
+            session_move::MovedSession::VscodeChat {
+                id,
+                from_storage,
+                into_storage,
+            } => vscode_chat::move_chat_back(&config_dirs, id, from_storage, into_storage),
+        };
+        match result {
+            Ok(()) => report.restored += 1,
+            Err(err) => {
+                report.skipped.push(format!(
+                    "{}: {}",
+                    session_label(index, record.id()),
+                    err.reason()
+                ));
+                if matches!(err, session_move::MoveError::Blocked(_)) {
+                    kept.push(record.clone());
+                }
+            }
+        }
+    }
+    kept.reverse();
+
+    let mut merges = index.merges.clone();
+    if kept.is_empty() {
+        merges.remove(key);
+        report.unmerged = true;
+    } else if let Some(merge) = merges.find_mut(key) {
+        merge.moved = kept;
+    }
+    let saved = merges.save(path);
     index.merges = merges;
-    project_merges::apply(&mut index.entries, &index.merges);
-    Ok(())
+    rebuild(index)?;
+    saved?;
+    Ok(report)
 }
 
 /// Watches the Copilot and VS Code session stores and calls `notify` after changes.
@@ -1439,7 +1735,7 @@ mod tests {
                 ..entry(Some(r"C:\AppData\Open Design\projects\1"), None, None)
             },
         ];
-        assign_projects(&mut entries);
+        assign_projects(&mut entries, &[]);
         let projects: Vec<_> = entries
             .iter()
             .map(|e| {
@@ -1462,6 +1758,14 @@ mod tests {
         assert_eq!(projects[5], ("none", "No folder"));
         assert_eq!(projects[6].1, "C:");
         assert_eq!(projects[7], ("app:open design", "Open Design"));
+
+        // Sessions left in the root of moved sessions keep that root's repository.
+        let mut left = vec![entry(Some(r"C:\Repos\old\src"), None, None)];
+        assign_projects(
+            &mut left,
+            &[(r"C:\Repos\old".to_string(), "me/Old".to_string())],
+        );
+        assert_eq!(left[0].summary.project.key, "repo:me/old");
     }
 
     #[test]
@@ -1488,7 +1792,7 @@ mod tests {
             ),
             entry(None, None, None),
         ];
-        assign_projects(&mut entries);
+        assign_projects(&mut entries, &[]);
         project_merges::apply(&mut entries, &project_merges::Merges::default());
         let summary = |entries: &[Entry]| -> Vec<(String, bool, usize)> {
             entries
@@ -1520,8 +1824,12 @@ mod tests {
         project_merges::apply(&mut entries, &merges);
         let collector = entries[3].summary.project.clone();
         assert!(entries[..4].iter().all(|e| e.summary.project == collector));
-        let merged: Vec<_> = collector.merged.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(merged, ["ShotGallery", "ShotNotebook"]);
+        let merged: Vec<_> = collector
+            .merged
+            .iter()
+            .map(|p| (p.project.name.as_str(), p.not_moved))
+            .collect();
+        assert_eq!(merged, [("ShotGallery", 2), ("ShotNotebook", 1)]);
         assert!(!collector.missing);
         assert_eq!(entries[4].summary.project.key, "none");
 

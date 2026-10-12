@@ -8,11 +8,13 @@
 //!
 //! [`delete`] removes a chat the way VS Code does (its files and its `state.vscdb` entries), but
 //! only while no running VS Code window has the chat's workspace open: such a window keeps the
-//! chat index in memory and would write the chat back.
+//! chat index in memory and would write the chat back. [`move_chat`] moves a chat to another
+//! workspace's storage under the same condition.
 
+use crate::session_move::MoveError;
 use crate::{
-    file_stamp, first_line_title, is_session_id, non_empty, ChatMessage, Entry, FileStamp,
-    ParsedEvents, Project, SessionSummary,
+    file_stamp, first_line_title, is_session_id, non_empty, normalize_path, ChatMessage, Entry,
+    FileStamp, ParsedEvents, Project, SessionSummary,
 };
 use rayon::prelude::*;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior};
@@ -528,6 +530,291 @@ fn remove_chat_from(key: &str, value: &mut Value, id: &str) -> bool {
     }
 }
 
+/// Moves chat `id` into the workspace storage of the first of `folders` that VS Code has opened
+/// before (in the same VS Code installation), so that VS Code lists the chat there. Returns the
+/// storages it was moved from and to, or None when it is in that storage already.
+pub fn move_chat(
+    config_dirs: &[PathBuf],
+    id: &str,
+    folders: &[String],
+) -> Result<Option<(PathBuf, PathBuf)>, MoveError> {
+    let chat = discover(config_dirs)
+        .remove(&id.to_ascii_lowercase())
+        .ok_or_else(|| MoveError::Gone("the chat was not found".to_string()))?;
+    let source = chat.workspace.clone();
+    let config_dir = config_dir_of(&source.storage_dir)
+        .ok_or_else(|| MoveError::Blocked("the chat has no folder".to_string()))?;
+    let target = folders
+        .iter()
+        .find_map(|folder| folder_storage(&config_dir, folder))
+        .ok_or_else(|| {
+            MoveError::Blocked(format!(
+                "VS Code has not opened {} yet. Open it in VS Code once, close that window and try again.",
+                folders.first().map_or("the folder", String::as_str)
+            ))
+        })?;
+    if target.storage_dir == source.storage_dir {
+        return Ok(None);
+    }
+    ensure_closed(&source)?;
+    ensure_closed(&target)?;
+    transfer(&chat, &source.storage_dir, &target.storage_dir).map_err(MoveError::Blocked)?;
+    Ok(Some((
+        source.storage_dir.clone(),
+        target.storage_dir.clone(),
+    )))
+}
+
+/// Moves chat `id` from `into_storage` back to `from_storage`, undoing [`move_chat`].
+pub fn move_chat_back(
+    config_dirs: &[PathBuf],
+    id: &str,
+    from_storage: &Path,
+    into_storage: &Path,
+) -> Result<(), MoveError> {
+    let chat = discover(config_dirs)
+        .remove(&id.to_ascii_lowercase())
+        .ok_or_else(|| MoveError::Gone("the chat was deleted".to_string()))?;
+    let current = chat
+        .copies
+        .iter()
+        .find(|copy| copy.workspace.storage_dir == into_storage)
+        .ok_or_else(|| MoveError::Gone("the chat was moved since".to_string()))?;
+    let config_dir = config_dir_of(from_storage)
+        .filter(|_| from_storage.join("state.vscdb").is_file())
+        .ok_or_else(|| {
+            MoveError::Gone("VS Code removed the chat's original workspace data".to_string())
+        })?;
+    let original = read_workspace(
+        from_storage.to_path_buf(),
+        open_windows(&config_dir).as_ref(),
+    );
+    ensure_closed(&current.workspace)?;
+    ensure_closed(&original)?;
+    transfer(&chat, into_storage, from_storage).map_err(MoveError::Blocked)
+}
+
+/// VS Code installation folder of a workspace storage (`<config>/User/workspaceStorage/<id>`).
+fn config_dir_of(storage_dir: &Path) -> Option<PathBuf> {
+    let storages = storage_dir.parent()?;
+    let user = storages.parent()?;
+    (storages.file_name()? == "workspaceStorage" && user.file_name()? == "User")
+        .then(|| user.parent().map(Path::to_path_buf))
+        .flatten()
+}
+
+/// The workspace storage VS Code uses for `folder` opened as a single-folder workspace.
+fn folder_storage(config_dir: &Path, folder: &str) -> Option<Workspace> {
+    let wanted = normalize_path(folder);
+    let storage = fs::read_dir(config_dir.join("User").join("workspaceStorage"))
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|dir| {
+            fs::read_to_string(dir.join("workspace.json"))
+                .ok()
+                .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                .and_then(|value| value["folder"].as_str().and_then(file_uri_to_path))
+                .is_some_and(|path| normalize_path(&path) == wanted)
+                && dir.join("state.vscdb").is_file()
+        })
+        .max_by_key(|dir| file_stamp(&dir.join("state.vscdb")).1)?;
+    Some(read_workspace(storage, open_windows(config_dir).as_ref()))
+}
+
+fn ensure_closed(workspace: &Workspace) -> Result<(), MoveError> {
+    if !workspace.window_open {
+        return Ok(());
+    }
+    let place = workspace
+        .folder
+        .as_deref()
+        .unwrap_or("a window without folder");
+    Err(MoveError::Blocked(format!(
+        "{place} is open in VS Code. Close that window and try again."
+    )))
+}
+
+/// Moves a chat's file, `state.vscdb` entries and editing session from one workspace storage
+/// to another, writing the target first.
+fn transfer(chat: &ChatFile, source: &Path, target: &Path) -> Result<(), String> {
+    let file_name = chat
+        .path
+        .file_name()
+        .ok_or_else(|| format!("Invalid chat file {}", chat.path.display()))?;
+    let chat_dir = target.join("chatSessions");
+    fs::create_dir_all(&chat_dir)
+        .map_err(|err| format!("Unable to create {}: {err}", chat_dir.display()))?;
+    let target_file = chat_dir.join(file_name);
+    // The newest copy, which may be in a third storage.
+    if chat.path != target_file {
+        fs::copy(&chat.path, &target_file).map_err(|err| {
+            format!(
+                "Unable to copy {} to {}: {err}",
+                chat.path.display(),
+                target_file.display()
+            )
+        })?;
+    }
+    for extension in ["json", "jsonl"] {
+        let stale = chat_dir.join(format!("{}.{extension}", chat.id));
+        if stale != target_file && stale.is_file() {
+            let _ = fs::remove_file(stale);
+        }
+    }
+    copy_chat_state(
+        &source.join("state.vscdb"),
+        &target.join("state.vscdb"),
+        &chat.id,
+    )?;
+    remove_chat_state(&source.join("state.vscdb"), &chat.id)?;
+    for copy in chat
+        .copies
+        .iter()
+        .filter(|copy| copy.workspace.storage_dir == source)
+    {
+        match fs::remove_file(&copy.path) {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+                return Err(format!("Unable to delete {}: {err}", copy.path.display()));
+            }
+            _ => {}
+        }
+    }
+    let editing = source.join("chatEditingSessions").join(&chat.id);
+    let target_editing = target.join("chatEditingSessions").join(&chat.id);
+    if editing.is_dir() && !target_editing.exists() {
+        // Best effort: the chat works without its editing session (the undo state of its edits).
+        let _ = fs::create_dir_all(target.join("chatEditingSessions"))
+            .and_then(|()| fs::rename(&editing, &target_editing));
+    }
+    Ok(())
+}
+
+/// Copies the `state.vscdb` entries of chat `id` (lowercase) to another workspace's database.
+/// Terminal entries are not copied: they belong to the terminals of the source window.
+fn copy_chat_state(source_db: &Path, target_db: &Path, id: &str) -> Result<(), String> {
+    if !source_db.is_file() {
+        return Ok(());
+    }
+    let read_fail = |err: rusqlite::Error| format!("Unable to read {}: {err}", source_db.display());
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let source = Connection::open_with_flags(source_db, flags).map_err(read_fail)?;
+    source
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(read_fail)?;
+    let read = |conn: &Connection, key: &str| -> Result<Option<Value>, rusqlite::Error> {
+        let value: Option<String> = conn
+            .query_row("SELECT value FROM ItemTable WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        Ok(value.and_then(|text| serde_json::from_str::<Value>(&text).ok()))
+    };
+    let mut parts = Vec::new();
+    for key in [INDEX_KEY, TODO_KEY]
+        .into_iter()
+        .chain(AGENT_SESSION_CACHES)
+    {
+        if let Some(part) = read(&source, key)
+            .map_err(read_fail)?
+            .and_then(|value| chat_part(key, &value, id))
+        {
+            parts.push((key, part));
+        }
+    }
+    drop(source);
+    if parts.is_empty() {
+        return Ok(());
+    }
+
+    let fail = |err: rusqlite::Error| format!("Unable to update {}: {err}", target_db.display());
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let mut conn = Connection::open_with_flags(target_db, flags).map_err(fail)?;
+    conn.busy_timeout(Duration::from_secs(5)).map_err(fail)?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(fail)?;
+    for (key, part) in parts {
+        let mut value = read(&tx, key).map_err(fail)?.unwrap_or(Value::Null);
+        if insert_chat_part(key, &mut value, part, id) {
+            tx.execute(
+                "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?1, ?2)",
+                (key, value.to_string()),
+            )
+            .map_err(fail)?;
+        }
+    }
+    tx.commit().map_err(fail)
+}
+
+/// The part of the `state.vscdb` value stored under `key` that belongs to chat `id`
+/// (lowercase): an object of its entries, or an array of its cache items.
+fn chat_part(key: &str, value: &Value, id: &str) -> Option<Value> {
+    let is_id = |text: &str| text.eq_ignore_ascii_case(id);
+    let pick = |map: Option<&serde_json::Map<String, Value>>| {
+        let picked: serde_json::Map<String, Value> = map?
+            .iter()
+            .filter(|(key, _)| is_id(key))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        (!picked.is_empty()).then_some(Value::Object(picked))
+    };
+    match key {
+        INDEX_KEY => pick(value.get("entries").and_then(Value::as_object)),
+        TODO_KEY => pick(value.as_object()),
+        _ => {
+            let items: Vec<Value> = value
+                .as_array()?
+                .iter()
+                .filter(|item| is_local_chat(item, id))
+                .cloned()
+                .collect();
+            (!items.is_empty()).then_some(Value::Array(items))
+        }
+    }
+}
+
+fn is_local_chat(item: &Value, id: &str) -> bool {
+    item["resource"]
+        .as_str()
+        .and_then(local_session_id)
+        .as_deref()
+        == Some(id)
+}
+
+/// Adds a [`chat_part`] to the `state.vscdb` value stored under `key`; returns whether the
+/// value changed. Caches that do not exist yet are left for VS Code to build.
+fn insert_chat_part(key: &str, value: &mut Value, part: Value, id: &str) -> bool {
+    fn object(value: &mut Value) -> &mut serde_json::Map<String, Value> {
+        if !value.is_object() {
+            *value = Value::Object(serde_json::Map::new());
+        }
+        value.as_object_mut().expect("just made an object")
+    }
+    match (key, part) {
+        (INDEX_KEY, Value::Object(entries)) => {
+            if !value.is_object() {
+                *value = serde_json::json!({ "version": 1 });
+            }
+            object(object(value).entry("entries").or_insert(Value::Null)).extend(entries);
+            true
+        }
+        (TODO_KEY, Value::Object(entries)) => {
+            object(value).extend(entries);
+            true
+        }
+        (_, Value::Array(items)) => {
+            let Some(cache) = value.as_array_mut() else {
+                return false;
+            };
+            cache.retain(|item| !is_local_chat(item, id));
+            cache.extend(items);
+            true
+        }
+        _ => false,
+    }
+}
+
 fn read_workspace(storage_dir: PathBuf, windows: Option<&OpenWindows>) -> Workspace {
     let value = fs::read_to_string(storage_dir.join("workspace.json"))
         .ok()
@@ -609,7 +896,7 @@ fn percent_decode(text: &str) -> String {
 }
 
 /// Converts a `file://` URI to a local path (`file:///c%3A/x` -> `c:\x` on Windows).
-fn file_uri_to_path(uri: &str) -> Option<String> {
+pub(crate) fn file_uri_to_path(uri: &str) -> Option<String> {
     let rest = percent_decode(uri.strip_prefix("file://")?);
     let separator = if cfg!(windows) { "\\" } else { "/" };
     let path = match rest.strip_prefix('/') {
@@ -1347,6 +1634,63 @@ mod tests {
         assert!(delete(std::slice::from_ref(&config_dir), CHAT)
             .unwrap_err()
             .contains("not found"));
+        fs::remove_dir_all(&config_dir).unwrap();
+    }
+
+    #[test]
+    fn moves_chats_between_workspaces_and_back() {
+        let config_dir = temp_path("move-chat");
+        let _ = fs::remove_dir_all(&config_dir);
+        let old = write_workspace(&config_dir, "a", "file:///c%3A/Repos/Old", &[CHAT, OTHER]);
+        let new_uri = "file:///c%3A/Repos/New";
+        let new = write_workspace(&config_dir, "b", new_uri, &[]);
+        let config_dirs = std::slice::from_ref(&config_dir);
+        let new_folder = file_uri_to_path(new_uri).unwrap();
+
+        let missing = move_chat(config_dirs, CHAT, &["/nowhere".to_string()]).unwrap_err();
+        assert!(matches!(missing, MoveError::Blocked(_)), "{missing:?}");
+
+        let (from, into) = move_chat(config_dirs, CHAT, std::slice::from_ref(&new_folder))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (from.as_path(), into.as_path()),
+            (old.as_path(), new.as_path())
+        );
+        assert!(!old.join(format!("chatSessions/{CHAT}.jsonl")).exists());
+        assert!(new.join(format!("chatSessions/{CHAT}.jsonl")).exists());
+        assert!(new.join("chatEditingSessions").join(CHAT).is_dir());
+        assert!(!old.join("chatEditingSessions").join(CHAT).exists());
+        assert_eq!(stored_ids(&old), vec![OTHER.to_string()]);
+        assert_eq!(stored_ids(&new), vec![CHAT.to_string()]);
+        let read = |storage: &Path, key: &str| -> String {
+            Connection::open(storage.join("state.vscdb"))
+                .unwrap()
+                .query_row("SELECT value FROM ItemTable WHERE key = ?1", [key], |row| {
+                    row.get(0)
+                })
+                .unwrap()
+        };
+        assert!(read(&new, TODO_KEY).contains(CHAT));
+        assert!(read(&new, AGENT_SESSION_CACHES[0]).contains(&chat_resource(CHAT)));
+        assert!(!read(&new, TERMINALS_KEY).contains(CHAT));
+        assert!(!read(&old, AGENT_SESSION_CACHES[0]).contains(&chat_resource(CHAT)));
+        assert_eq!(move_chat(config_dirs, CHAT, &[new_folder]).unwrap(), None);
+
+        move_chat_back(config_dirs, CHAT, &from, &into).unwrap();
+        assert!(old.join(format!("chatSessions/{CHAT}.jsonl")).exists());
+        assert!(!new.join(format!("chatSessions/{CHAT}.jsonl")).exists());
+        assert!(old.join("chatEditingSessions").join(CHAT).is_dir());
+        let mut ids = stored_ids(&old);
+        ids.sort();
+        let mut expected = vec![CHAT.to_string(), OTHER.to_string()];
+        expected.sort();
+        assert_eq!(ids, expected);
+        assert!(stored_ids(&new).is_empty());
+        assert!(matches!(
+            move_chat_back(config_dirs, CHAT, &from, &into),
+            Err(MoveError::Gone(_))
+        ));
         fs::remove_dir_all(&config_dir).unwrap();
     }
 

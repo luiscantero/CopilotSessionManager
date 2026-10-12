@@ -755,12 +755,22 @@ mark {
 .merged-list .merged-name {
   flex: 1;
   min-width: 0;
+}
+
+.merged-list .merged-title,
+.merged-list .merged-status {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.merged-list .merged-detail {
+.merged-list .merged-status {
+  font-size: 0.92em;
+}
+
+.merged-list .merged-detail,
+.merged-list .merged-status {
   color: var(--fg-muted);
 }
 
@@ -768,6 +778,44 @@ mark {
   min-width: 0;
   height: 24px;
   padding: 0 8px;
+}
+
+.check-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0 0 8px;
+  cursor: pointer;
+}
+
+.check-field input {
+  flex: none;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.merge-report {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.merge-report p {
+  margin: 0;
+}
+
+.merge-report-list {
+  max-height: 140px;
+  margin: 6px 0 0;
+  padding-inline-start: 18px;
+  overflow: auto;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
+.merge-report-list:empty {
+  display: none;
 }
 
 .toast {

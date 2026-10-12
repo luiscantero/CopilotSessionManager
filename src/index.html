@@ -119,11 +119,19 @@
           <span data-i18n="merge.targetLabel">Show its sessions under</span>
           <select id="merge-target" class="select"></select>
         </label>
+        <label class="check-field">
+          <input id="merge-move" type="checkbox" />
+          <span data-i18n="merge.moveLabel">Also move its sessions to that project's folder, so VS Code and the Copilot CLI list them there too</span>
+        </label>
+        <p id="merge-warning" class="dialog-warning" data-i18n="merge.warning">This only changes grouping in this app. No files are moved or changed.</p>
         <div id="merged-section" class="merged-section" hidden>
           <p data-i18n="merge.mergedInto">Merged into this project:</p>
           <ul id="merged-list" class="merged-list"></ul>
         </div>
-        <p class="dialog-warning" data-i18n="merge.warning">This only changes grouping in this app. No files are moved or changed.</p>
+        <div id="merge-report" class="merge-report" hidden>
+          <p id="merge-report-text"></p>
+          <ul id="merge-report-list" class="merge-report-list"></ul>
+        </div>
         <div class="dialog-buttons">
           <button id="merge-cancel" class="button secondary" type="button" data-i18n="dialog.close">Close</button>
           <button id="merge-confirm" class="button primary" type="button" data-i18n="merge.confirm" disabled>Merge</button>

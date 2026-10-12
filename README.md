@@ -4,8 +4,9 @@ Search, read, resume and clean up your local **GitHub Copilot CLI sessions** and
 chats**. Full-text search across every session and message, in milliseconds, without leaving your
 machine.
 
-Available as a **VS Code extension** (recommended) and as a standalone **desktop app**. Both share
-the same Rust search core and the same UI. Formerly called "Copilot Session Search".
+Available as a **VS Code extension** (recommended, [get it from the Visual Studio
+Marketplace](https://marketplace.visualstudio.com/items?itemName=luiscantero.copilot-session-manager))
+and as a standalone **desktop app**. Both share the same Rust search core and the same UI.
 
 > Unofficial tool, not affiliated with GitHub or Microsoft.
 
@@ -60,8 +61,20 @@ CLI from another terminal or editor, or to clean up VS Code chats while VS Code 
   ShotCollector): select the old project in the filter, click the merge button next to it and
   choose the new project. Chains resolve to the newest project, and merges can be undone from the
   same dialog. Projects whose folder no longer exists are marked "folder missing" as merge
-  candidates. Merges only affect grouping and are shared by the extension and the desktop app
-  (`project-merges.json` in `%APPDATA%/com.luiscantero.copilot-session-manager` on Windows).
+  candidates. Merges are shared by the extension and the desktop app (`project-merges.json` in
+  `%APPDATA%/com.luiscantero.copilot-session-manager` on Windows).
+- By default a merge only changes grouping in this tool. Check **Also move its sessions** when
+  merging (or click **Move** next to an existing merge) to also move the sessions to the new
+  project's folder, so VS Code and the Copilot CLI list them there too:
+  - Copilot CLI sessions: `cwd`, `git_root` and `repository` in `workspace.yaml`, and the working
+    directories that VS Code's agent host caches in `agent-host.db`.
+  - VS Code chats move to the new folder's workspace storage (chat file, editing session and their
+    entries in `state.vscdb`). The new folder must have been opened in VS Code once, and neither
+    folder may be open in VS Code while moving.
+  - Sessions in use or blocked by an open VS Code window are skipped and listed; click **Move**
+    again later. Reload VS Code afterwards.
+  - **Unmerge** moves the sessions back. Links to files inside the old folder in the conversations
+    are not rewritten.
 
 ### Clean up safely
 
@@ -102,13 +115,21 @@ English.
 
 Everything runs locally. There is no telemetry and nothing is sent over the network. Session files
 are only read, except when you confirm **Delete** or merge projects (which writes
-`project-merges.json`).
+`project-merges.json`, and when you choose to move the sessions, their folder information).
 
 ## Install
 
 ### VS Code extension
 
-Build the VSIX (requires Node.js 20+ and Rust) and install it:
+Install it from the
+[Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=luiscantero.copilot-session-manager),
+search for **Session Manager for GitHub Copilot** in VS Code's Extensions view, or run:
+
+```powershell
+code --install-extension luiscantero.copilot-session-manager
+```
+
+To build it from source instead, build the VSIX (requires Node.js 20+ and Rust) and install it:
 
 ```powershell
 cd vscode-extension

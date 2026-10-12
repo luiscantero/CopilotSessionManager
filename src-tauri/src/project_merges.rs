@@ -1,8 +1,11 @@
 //! User-defined project merges, for repositories that were renamed or moved to another folder
 //! (for example ShotNotebook -> ShotGallery -> ShotCollector). A merge groups all sessions of one
-//! project under another one; chains resolve to the newest project. Merges only change grouping
-//! in this app and are stored in `project-merges.json` in the app's config folder.
+//! project under another one; chains resolve to the newest project. Merges are stored in
+//! `project-merges.json` in the app's config folder. By default they only change grouping in
+//! this app; a merge can also move the sessions to the new project's folder (see
+//! [`crate::session_move`]), which it records so that unmerging can move them back.
 
+use crate::session_move::MovedSession;
 use crate::{Entry, Project};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -22,6 +25,21 @@ pub struct ProjectRef {
 pub struct Merge {
     pub from: ProjectRef,
     pub into: ProjectRef,
+    /// Sessions moved to the folder of `into`, in the order they were moved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub moved: Vec<MovedSession>,
+}
+
+/// A project merged into another one, as shown in the merge dialog.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergedProject {
+    #[serde(flatten)]
+    pub project: ProjectRef,
+    /// Sessions moved to the folder of the project it was merged into.
+    pub moved: usize,
+    /// Sessions still in the project's own folder.
+    pub not_moved: usize,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -53,7 +71,7 @@ impl Merges {
     }
 
     /// Follows merges starting at `key`; returns the final key and the last merge target.
-    fn resolve<'a>(&'a self, key: &str) -> (String, Option<&'a ProjectRef>) {
+    pub fn resolve<'a>(&'a self, key: &str) -> (String, Option<&'a ProjectRef>) {
         let mut current = key.to_string();
         let mut target = None;
         let mut seen = HashSet::new();
@@ -81,9 +99,37 @@ impl Merges {
                 into.name, from.name
             ));
         }
-        self.merges.retain(|merge| merge.from.key != from.key);
-        self.merges.push(Merge { from, into });
+        // Sessions moved by an earlier merge of `from` stay recorded, so they can be moved back.
+        let moved = self
+            .merges
+            .iter()
+            .position(|merge| merge.from.key == from.key)
+            .map(|index| self.merges.remove(index).moved)
+            .unwrap_or_default();
+        self.merges.push(Merge { from, into, moved });
         Ok(())
+    }
+
+    pub fn find(&self, key: &str) -> Option<&Merge> {
+        self.merges.iter().find(|merge| merge.from.key == key)
+    }
+
+    /// (git root, repository) of each moved Copilot CLI session before it was moved.
+    pub fn moved_roots(&self) -> Vec<(String, String)> {
+        self.merges
+            .iter()
+            .flat_map(|merge| &merge.moved)
+            .filter_map(|moved| match moved {
+                MovedSession::Cli { before, .. } => {
+                    Some((before.git_root.clone()?, before.repository.clone()?))
+                }
+                MovedSession::VscodeChat { .. } => None,
+            })
+            .collect()
+    }
+
+    pub fn find_mut(&mut self, key: &str) -> Option<&mut Merge> {
+        self.merges.iter_mut().find(|merge| merge.from.key == key)
     }
 
     pub fn remove(&mut self, key: &str) -> bool {
@@ -97,9 +143,13 @@ impl Merges {
 /// projects whose folders no longer exist.
 pub fn apply(entries: &mut [Entry], merges: &Merges) {
     let mut live: HashMap<&str, &Project> = HashMap::new();
+    let mut own_sessions: HashMap<&str, usize> = HashMap::new();
     for entry in entries.iter() {
         live.entry(entry.base_project.key.as_str())
             .or_insert(&entry.base_project);
+        *own_sessions
+            .entry(entry.base_project.key.as_str())
+            .or_default() += 1;
     }
 
     let mut resolved: HashMap<String, Project> = HashMap::new();
@@ -123,11 +173,18 @@ pub fn apply(entries: &mut [Entry], merges: &Merges) {
             .merges
             .iter()
             .filter(|merge| merges.resolve(&merge.from.key).0 == project.key)
-            .map(|merge| merge.from.clone())
+            .map(|merge| MergedProject {
+                project: merge.from.clone(),
+                moved: merge.moved.len(),
+                not_moved: own_sessions
+                    .get(merge.from.key.as_str())
+                    .copied()
+                    .unwrap_or(0),
+            })
             .collect();
         project
             .merged
-            .sort_by_key(|merged| merged.name.to_lowercase());
+            .sort_by_key(|merged| merged.project.name.to_lowercase());
         resolved.insert(key.to_string(), project.clone());
         project
     };
@@ -212,10 +269,12 @@ mod tests {
                 Merge {
                     from: a.clone(),
                     into: b.clone(),
+                    moved: Vec::new(),
                 },
                 Merge {
                     from: b.clone(),
                     into: a.clone(),
+                    moved: Vec::new(),
                 },
             ],
         };
@@ -235,9 +294,29 @@ mod tests {
         merges
             .add(project("path:/old", "old"), project("repo:me/new", "new"))
             .unwrap();
+        merges
+            .find_mut("path:/old")
+            .unwrap()
+            .moved
+            .push(MovedSession::VscodeChat {
+                id: "x".to_string(),
+                from_storage: "a".into(),
+                into_storage: "b".into(),
+            });
         merges.save(&path).unwrap();
         let loaded = Merges::load(&path);
         assert_eq!(loaded.resolve("path:/old").0, "repo:me/new");
+        assert_eq!(loaded.find("path:/old").unwrap().moved.len(), 1);
+
+        // Merging again keeps the record of moved sessions.
+        let mut merges = loaded;
+        merges
+            .add(
+                project("path:/old", "old"),
+                project("repo:me/other", "other"),
+            )
+            .unwrap();
+        assert_eq!(merges.find("path:/old").unwrap().moved.len(), 1);
         fs::write(&path, "not json").unwrap();
         assert!(Merges::load(&path).merges.is_empty());
         fs::remove_dir_all(&dir).unwrap();

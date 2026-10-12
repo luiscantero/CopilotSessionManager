@@ -65,29 +65,45 @@ async fn list_projects(state: State<'_, AppState>) -> Result<Vec<ProjectInfo>, S
     with_index(&state, |index| Ok(list_project_infos(index))).await
 }
 
-/// Groups the sessions of project `from` under project `into` (both current group keys).
-/// Returns the key of the resulting group.
+/// Groups the sessions of project `from` under project `into` (both current group keys), and
+/// with `move_sessions` also moves them to the folder of `into`.
 #[tauri::command]
 async fn merge_project(
     app: AppHandle,
     state: State<'_, AppState>,
     from: String,
     into: String,
-) -> Result<String, String> {
+    move_sessions: Option<bool>,
+) -> Result<MergeResult, String> {
     let path = merges_path(&app)?;
     with_index(&state, move |index| {
-        merge_projects(index, &path, &from, &into)
+        merge_projects(index, &path, &from, &into, move_sessions.unwrap_or(false))
     })
     .await
 }
 
-/// Undoes the merge of project `key` (it becomes its own group again).
+/// Moves the sessions of merged project `key` to the folder of the project it is merged into.
+#[tauri::command]
+async fn move_merged_project(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    key: String,
+) -> Result<MoveReport, String> {
+    let path = merges_path(&app)?;
+    with_index(&state, move |index| {
+        super::move_merged_project(index, &path, &key)
+    })
+    .await
+}
+
+/// Undoes the merge of project `key` (it becomes its own group again), moving moved sessions
+/// back.
 #[tauri::command]
 async fn unmerge_project(
     app: AppHandle,
     state: State<'_, AppState>,
     key: String,
-) -> Result<(), String> {
+) -> Result<UnmergeReport, String> {
     let path = merges_path(&app)?;
     with_index(&state, move |index| {
         super::unmerge_project(index, &path, &key)
@@ -127,6 +143,7 @@ pub fn run() {
             delete_session,
             list_projects,
             merge_project,
+            move_merged_project,
             unmerge_project
         ])
         .run(tauri::generate_context!())

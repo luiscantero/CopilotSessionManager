@@ -90,7 +90,15 @@ fn handle(
             merges_path()?,
             param("from")?,
             param("into")?,
+            request
+                .params
+                .get("moveSessions")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         )?),
+        "move_merged_project" => {
+            to_value(move_merged_project(index, merges_path()?, param("key")?)?)
+        }
         "unmerge_project" => to_value(unmerge_project(index, merges_path()?, param("key")?)?),
         other => Err(format!("Unknown method {other}")),
     }

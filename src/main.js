@@ -45,8 +45,13 @@ const el = {
   mergeDialog: document.getElementById("merge-backdrop"),
   mergedList: document.getElementById("merged-list"),
   mergedSection: document.getElementById("merged-section"),
+  mergeMove: document.getElementById("merge-move"),
+  mergeReport: document.getElementById("merge-report"),
+  mergeReportList: document.getElementById("merge-report-list"),
+  mergeReportText: document.getElementById("merge-report-text"),
   mergeTarget: document.getElementById("merge-target"),
   mergeText: document.getElementById("merge-text"),
+  mergeWarning: document.getElementById("merge-warning"),
   openChat: document.getElementById("open-chat"),
   projectFilter: document.getElementById("project-filter"),
   refresh: document.getElementById("refresh"),
@@ -853,7 +858,7 @@ function closeDeleteDialog() {
   el.dialog.hidden = true;
 }
 
-async function openMergeDialog() {
+async function openMergeDialog(report = null) {
   if (!isMergeable(state.project)) {
     return;
   }
@@ -893,20 +898,76 @@ async function openMergeDialog() {
   ].join("");
   el.mergeTarget.disabled = !targets.length;
   el.mergeConfirm.disabled = true;
+  el.mergeMove.checked = false;
+  updateMergeWarning();
 
   el.mergedSection.hidden = !source.merged.length;
   el.mergedList.innerHTML = source.merged
-    .map(
-      (project) => `<li>
-        <span class="merged-name" title="${escapeHtml(project.detail)}">${escapeHtml(project.name)}
-          <span class="merged-detail">${escapeHtml(project.detail)}</span></span>
-        <button class="button secondary" type="button" data-key="${escapeHtml(project.key)}">${escapeHtml(t("merge.unmerge"))}</button>
-      </li>`
-    )
+    .map((project) => {
+      const status = [
+        project.moved ? t("merge.movedCount", { count: project.moved }) : "",
+        project.moved && project.notMoved ? t("merge.notMovedCount", { count: project.notMoved }) : ""
+      ].filter(Boolean);
+      const key = escapeHtml(project.key);
+      const unmergeTitle = project.moved ? ` title="${escapeHtml(t("merge.unmergeMovedTitle"))}"` : "";
+      return `<li>
+        <span class="merged-name" title="${escapeHtml(project.detail)}">
+          <span class="merged-title">${escapeHtml(project.name)} <span class="merged-detail">${escapeHtml(project.detail)}</span></span>${
+            status.length ? `<span class="merged-status">${escapeHtml(status.join(" · "))}</span>` : ""
+          }</span>
+        ${
+          project.notMoved
+            ? `<button class="button secondary" type="button" data-action="move" data-key="${key}" title="${escapeHtml(t("merge.moveTitle"))}">${escapeHtml(t("merge.move"))}</button>`
+            : ""
+        }
+        <button class="button secondary" type="button" data-action="unmerge" data-key="${key}"${unmergeTitle}>${escapeHtml(t("merge.unmerge"))}</button>
+      </li>`;
+    })
     .join("");
+  renderMergeReport(report);
 
   el.mergeDialog.hidden = false;
   el.mergeTarget.focus();
+}
+
+function updateMergeWarning() {
+  const move = el.mergeMove.checked;
+  el.mergeWarning.dataset.i18n = move ? "merge.warningMove" : "merge.warning";
+  el.mergeWarning.textContent = move ? t("merge.warningMove") : t("merge.warning");
+}
+
+// Shows the result of moving sessions ({ move }) or of unmerging ({ unmerge }) in the merge dialog.
+function renderMergeReport(report) {
+  const lines = [];
+  let skipped = [];
+  if (report?.move) {
+    const { moved, folder, skipped: notMoved } = report.move;
+    if (moved) {
+      lines.push(t("merge.reportMoved", { count: moved, folder: folder || "" }));
+    }
+    if (notMoved.length) {
+      lines.push(t("merge.reportSkipped", { count: notMoved.length }));
+    }
+    if (!moved && !notMoved.length) {
+      lines.push(t("merge.reportNothing"));
+    }
+    skipped = notMoved;
+  } else if (report?.unmerge) {
+    const { restored, unmerged, skipped: notRestored } = report.unmerge;
+    if (restored) {
+      lines.push(t("merge.reportRestored", { count: restored }));
+    }
+    if (!unmerged) {
+      lines.push(t("merge.stillMerged"));
+    }
+    if (notRestored.length) {
+      lines.push(t("merge.reportNotRestored", { count: notRestored.length }));
+    }
+    skipped = notRestored;
+  }
+  el.mergeReport.hidden = !lines.length;
+  el.mergeReportText.textContent = lines.join(" ");
+  el.mergeReportList.innerHTML = skipped.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("");
 }
 
 function closeMergeDialog() {
@@ -957,26 +1018,45 @@ async function mergeSelectedProject() {
   if (!into || !state.project) {
     return;
   }
+  const moveSessions = el.mergeMove.checked;
   el.mergeConfirm.disabled = true;
   try {
-    const key = await invoke("merge_project", { from: state.project, into });
+    const { key, report } = await invoke("merge_project", { from: state.project, into, moveSessions });
     setProject(key);
-    closeMergeDialog();
     await runSearch();
-    showToast(t("toast.merged"));
+    if (report?.skipped.length) {
+      await openMergeDialog({ move: report });
+      return;
+    }
+    closeMergeDialog();
+    showToast(report?.moved ? t("toast.mergedMoved", { count: report.moved }) : t("toast.merged"));
   } catch (error) {
     showToast(t("toast.mergeFailed", { error }), true);
     el.mergeConfirm.disabled = false;
   }
 }
 
+async function moveMergedProject(key, button) {
+  button.disabled = true;
+  try {
+    const report = await invoke("move_merged_project", { key });
+    await runSearch();
+    await openMergeDialog({ move: report });
+  } catch (error) {
+    showToast(t("toast.moveFailed", { error }), true);
+    button.disabled = false;
+  }
+}
+
 async function unmergeProject(key, button) {
   button.disabled = true;
   try {
-    await invoke("unmerge_project", { key });
+    const report = await invoke("unmerge_project", { key });
     await runSearch();
-    showToast(t("toast.unmerged"));
-    await openMergeDialog();
+    if (report.unmerged && !report.skipped.length) {
+      showToast(t("toast.unmerged"));
+    }
+    await openMergeDialog(report.restored || report.skipped.length ? { unmerge: report } : null);
   } catch (error) {
     showToast(t("toast.unmergeFailed", { error }), true);
     button.disabled = false;
@@ -1099,9 +1179,12 @@ function bindEvents() {
   el.mergeTarget.addEventListener("change", () => {
     el.mergeConfirm.disabled = !el.mergeTarget.value;
   });
+  el.mergeMove.addEventListener("change", updateMergeWarning);
   el.mergedList.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-key]");
-    if (button) {
+    if (button?.dataset.action === "move") {
+      moveMergedProject(button.dataset.key, button);
+    } else if (button) {
       unmergeProject(button.dataset.key, button);
     }
   });

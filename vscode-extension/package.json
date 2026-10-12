@@ -3,7 +3,7 @@
   "displayName": "Session Manager for GitHub Copilot",
   "description": "Full-text search across your local GitHub Copilot CLI sessions and VS Code chats. Read, resume, open, merge and delete them.",
   "version": "0.3.0",
-  "publisher": "lcantero",
+  "publisher": "luiscantero",
   "license": "MIT",
   "icon": "icon.png",
   "repository": {

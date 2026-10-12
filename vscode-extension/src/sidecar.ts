@@ -215,6 +215,14 @@ export class Sidecar implements vscode.Disposable {
         `The search backend is missing (${bundled}). This build of the extension may not support ${process.platform}-${process.arch}.`
       );
     }
+    if (process.platform !== "win32") {
+      // A VSIX packaged on Windows does not keep the executable bit.
+      try {
+        fs.accessSync(bundled, fs.constants.X_OK);
+      } catch {
+        fs.chmodSync(bundled, 0o755);
+      }
+    }
     return bundled;
   }
 }

@@ -1539,12 +1539,23 @@ mod tests {
 
         assert!(delete_session_dir(&root, "../outside", &no_dirs()).is_err());
 
-        let live_hold = File::create(dir.join("inuse.1234.hold")).unwrap();
+        // Windows detects a live hold by its open handle, other systems by its process ID.
+        let pid = if cfg!(windows) {
+            1234
+        } else {
+            std::process::id()
+        };
+        let hold = dir.join(format!("inuse.{pid}.hold"));
+        let live_hold = File::create(&hold).unwrap();
         assert!(is_in_use(&dir));
         assert!(delete_session_dir(&root, id, &no_dirs()).is_err());
         assert!(dir.is_dir());
 
         drop(live_hold);
+        if !cfg!(windows) {
+            // The hold of a process that exited.
+            fs::rename(&hold, dir.join("inuse.4294967294.hold")).unwrap();
+        }
         assert!(!is_in_use(&dir));
         fs::write(
             dir.join("workspace.yaml"),

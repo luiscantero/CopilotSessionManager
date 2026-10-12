@@ -107,12 +107,27 @@ Requirements: Node.js 20+, Rust (stable).
 cd vscode-extension
 npm install
 npm run package   # copies ../src, builds the sidecar and TypeScript, writes copilot-session-manager-<platform>-<version>.vsix
-code --install-extension copilot-session-manager-win32-x64-0.3.0.vsix
+code --install-extension copilot-session-manager-win32-x64-0.4.0.vsix
 ```
 
 The VSIX contains a native binary, so it is platform-specific. `npm run package` builds for the
 current platform; to build for another one, set `SIDECAR_TARGET` (Rust target triple, for
 `npm run build`) and `VSCE_TARGET` (for example `darwin-arm64`, for `node scripts/package.mjs`).
+To package a backend built elsewhere, point `SIDECAR_BINARY` at it instead of `SIDECAR_TARGET`.
+
+For Linux, build a static backend (no glibc version requirement) with
+[cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild), for example in WSL, and package it
+from Windows:
+
+```powershell
+wsl -e bash -lc "cd vscode-extension/sidecar && rustup target add x86_64-unknown-linux-musl && CARGO_TARGET_DIR=~/.cache/csm-sidecar cargo zigbuild --release --locked --target x86_64-unknown-linux-musl"
+$env:SIDECAR_BINARY = "\\wsl.localhost\Ubuntu\home\<user>\.cache\csm-sidecar\x86_64-unknown-linux-musl\release\copilot-session-manager-sidecar"
+$env:VSCE_TARGET = "linux-x64"
+npm run package
+```
+
+On Linux and macOS the extension sets the backend's executable bit on first use, since a VSIX
+packaged on Windows does not keep it.
 
 For development, run `npm run build` once, then `npm run watch`, and start VS Code with
 `code --extensionDevelopmentPath=<this folder>`.

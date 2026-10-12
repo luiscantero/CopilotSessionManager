@@ -766,11 +766,17 @@ mod tests {
 
         let config_dir = root.join("Code");
         let old_uri = file_uri(&old_s);
+        // VS Code keys GitHub data by the lowercased path on case-insensitive file systems.
+        let github_key = if cfg!(windows) {
+            file_uri(&old_s.to_lowercase())
+        } else {
+            old_uri.clone()
+        };
         let payload = json!({
             "data": {
                 "workingDirectories": [file_uri(&path_str(&old.join("sub")))],
                 "project": { "displayName": "Old", "uri": old_uri },
-                "_meta": { "githubData": { old_uri.to_lowercase(): { "owner": "me", "repo": "old" } }, "git": { "branchName": "main" } },
+                "_meta": { "githubData": { github_key: { "owner": "me", "repo": "old" } }, "git": { "branchName": "main" } },
                 "title": "t"
             },
             "payloadVersion": 2

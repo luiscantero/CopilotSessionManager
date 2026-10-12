@@ -9,6 +9,8 @@ the same Rust search core and the same UI. Formerly called "Copilot Session Sear
 
 > Unofficial tool, not affiliated with GitHub or Microsoft.
 
+![Session browser in VS Code with a search, the matching sessions and the selected conversation](vscode-extension/images/session-browser.png)
+
 ## Which one should I use?
 
 | | VS Code extension | Desktop app |
@@ -178,6 +180,11 @@ cd vscode-extension; npm run build  # extension: copy src/, build sidecar and Ty
 
 For the extension, run `npm run watch` and start VS Code with
 `code --extensionDevelopmentPath=<path to vscode-extension>`.
+
+Screenshots use fictional data: `tools/screenshots/start-demo.ps1` generates demo sessions and chats
+(`make_demo_data.py`) in a temporary folder and opens VS Code with a separate profile and the
+latest VSIX, pointing the backend at the demo data via `COPILOT_HOME` and `APPDATA`. Your real
+sessions are not shown or changed. The screenshots are in `vscode-extension/images/`.
 
 Tests (the ignored test indexes your real local sessions and prints timings):
 

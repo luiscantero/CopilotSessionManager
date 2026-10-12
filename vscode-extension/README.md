@@ -18,6 +18,10 @@ This extension puts all of them in one searchable list, wherever they were start
   owned by other apps, or still open in a VS Code window.
 - **Organized by repository**, with merging for repositories that were renamed or moved.
 
+![Session browser with a search, the matching sessions and the selected conversation](images/session-browser.png)
+
+![Quick search from the Command Palette, with resume, open in chat and copy buttons](images/quick-search.png)
+
 ## Features
 
 - **Quick search** (`Ctrl+Alt+F`, `Cmd+Alt+F` on macOS, or *Session Manager for GitHub Copilot:

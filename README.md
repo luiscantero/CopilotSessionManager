@@ -21,9 +21,9 @@ or Microsoft.
   project, and merges can be undone from the same dialog. Projects whose folder no longer exists
   are marked "folder missing" as merge candidates. Merges only affect grouping in this app and are
   saved in `project-merges.json` in the app's config folder
-  (`%APPDATA%/com.lcantero.copilot-session-manager` on Windows). Merges saved under the former
-  name (`com.lcantero.copilot-session-search`) are still read until the next merge saves them in
-  the new folder.
+  (`%APPDATA%/com.lcantero.copilot-session-manager` on Windows). On first start, settings, merges
+  and WebView data saved under the former name (`com.lcantero.copilot-session-search`) are moved
+  to the new folders.
 - Copy button on every message bubble.
 - Footer with the resume command (`copilot --resume=<id>`, copy button), **Set as done** and
   **Delete**.

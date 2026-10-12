@@ -348,26 +348,64 @@ fn config_base_dir() -> Option<PathBuf> {
 /// Same as `identifier` in `tauri.conf.json`. The desktop app and the VS Code extension share
 /// this config folder, so project merges apply to both.
 const APP_IDENTIFIER: &str = "com.lcantero.copilot-session-manager";
-/// Config folder used while the app was called "Copilot Session Search".
+/// Folder name used while the app was called "Copilot Session Search".
 const LEGACY_APP_IDENTIFIER: &str = "com.lcantero.copilot-session-search";
+
+/// Per-user folder for local (non-roaming) app data, where Tauri keeps the WebView storage.
+fn local_data_base_dir() -> Option<PathBuf> {
+    if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+    } else if cfg!(target_os = "macos") {
+        config_base_dir()
+    } else {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| home_dir().map(|home| home.join(".local").join("share")))
+    }
+}
 
 fn app_config_path(file: &str) -> Option<PathBuf> {
     config_base_dir().map(|dir| dir.join(APP_IDENTIFIER).join(file))
 }
 
-/// Loads the project merges, falling back to the file saved under the app's former name until
-/// the next merge saves them to `path`.
-fn load_merges(path: &Path) -> project_merges::Merges {
-    if !path.exists() {
-        let legacy = config_base_dir().map(|dir| {
-            dir.join(LEGACY_APP_IDENTIFIER)
-                .join(project_merges::FILE_NAME)
-        });
-        if let Some(legacy) = legacy.filter(|legacy| legacy.exists()) {
-            return project_merges::Merges::load(&legacy);
+/// Moves the settings, project merges and WebView data saved under the app's former name to the
+/// current folders. Must run before the WebView starts.
+fn migrate_legacy_app_dirs() {
+    for base in [config_base_dir(), local_data_base_dir()]
+        .into_iter()
+        .flatten()
+    {
+        migrate_dir(
+            &base.join(LEGACY_APP_IDENTIFIER),
+            &base.join(APP_IDENTIFIER),
+        );
+    }
+}
+
+/// Moves every entry of `legacy` into `current` unless `current` already has one with that name,
+/// then removes `legacy` if it is empty. Entries that are in use stay and are retried next time.
+fn migrate_dir(legacy: &Path, current: &Path) {
+    let Ok(entries) = fs::read_dir(legacy) else {
+        return;
+    };
+    if let Err(err) = fs::create_dir_all(current) {
+        eprintln!("Unable to create {}: {err}", current.display());
+        return;
+    }
+    for entry in entries.flatten() {
+        let target = current.join(entry.file_name());
+        if target.exists() {
+            continue;
+        }
+        if let Err(err) = fs::rename(entry.path(), &target) {
+            eprintln!(
+                "Unable to move {} to {}: {err}",
+                entry.path().display(),
+                target.display()
+            );
         }
     }
-    project_merges::Merges::load(path)
+    let _ = fs::remove_dir(legacy);
 }
 
 fn copilot_dir() -> Result<PathBuf, String> {
@@ -1157,6 +1195,39 @@ mod tests {
 
     #[test]
     #[cfg(windows)]
+    fn migrates_legacy_app_folder_without_overwriting() {
+        let root = std::env::temp_dir().join(format!(
+            "copilot-session-manager-migrate-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let legacy = root.join("legacy");
+        let current = root.join("current");
+        fs::create_dir_all(legacy.join("EBWebView")).unwrap();
+        fs::write(legacy.join("EBWebView").join("Local State"), "old").unwrap();
+        fs::write(legacy.join("project-merges.json"), "merges").unwrap();
+        fs::create_dir_all(&current).unwrap();
+        fs::write(current.join("window-state.json"), "new").unwrap();
+        fs::write(legacy.join("window-state.json"), "old").unwrap();
+
+        migrate_dir(&legacy, &current);
+
+        let read = |path: PathBuf| fs::read_to_string(path).unwrap();
+        assert_eq!(read(current.join("project-merges.json")), "merges");
+        assert_eq!(read(current.join("EBWebView").join("Local State")), "old");
+        assert_eq!(read(current.join("window-state.json")), "new");
+        // The entry that was not moved keeps the legacy folder alive.
+        assert_eq!(read(legacy.join("window-state.json")), "old");
+        assert!(!legacy.join("project-merges.json").exists());
+
+        fs::remove_file(legacy.join("window-state.json")).unwrap();
+        migrate_dir(&legacy, &current);
+        assert!(!legacy.exists());
+        migrate_dir(&root.join("missing"), &current);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn delete_refuses_live_sessions_and_removes_stale_ones() {
         let id = "00000000-0000-4000-8000-000000000001";
         let root = std::env::temp_dir().join(format!(

@@ -97,12 +97,13 @@ async fn unmerge_project(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    migrate_legacy_app_dirs();
     tauri::Builder::default()
         .manage(AppState::default())
         .manage(window_state::WindowSizeState::default())
         .setup(|app| {
             if let Ok(path) = merges_path(app.handle()) {
-                lock(&app.state::<AppState>().index).merges = load_merges(&path);
+                lock(&app.state::<AppState>().index).merges = project_merges::Merges::load(&path);
             }
             if let Some(window) = app.get_webview_window("main") {
                 if let Err(err) = window_state::restore(&window) {

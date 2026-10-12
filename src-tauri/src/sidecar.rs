@@ -21,10 +21,11 @@ struct Request {
 }
 
 pub fn run() {
+    migrate_legacy_app_dirs();
     let merges_path = app_config_path(project_merges::FILE_NAME);
     let mut index = Index::default();
     if let Some(path) = &merges_path {
-        index.merges = load_merges(path);
+        index.merges = project_merges::Merges::load(path);
     }
     spawn_watcher(|| write_line(&json!({ "event": watcher::CHANGED_EVENT })));
 

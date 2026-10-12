@@ -8,12 +8,12 @@
   "icon": "icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/luiscantero/CopilotSessionSearch"
+    "url": "https://github.com/luiscantero/CopilotSessionManager"
   },
   "bugs": {
-    "url": "https://github.com/luiscantero/CopilotSessionSearch/issues"
+    "url": "https://github.com/luiscantero/CopilotSessionManager/issues"
   },
-  "homepage": "https://github.com/luiscantero/CopilotSessionSearch#readme",
+  "homepage": "https://github.com/luiscantero/CopilotSessionManager#readme",
   "engines": {
     "vscode": "^1.100.0"
   },

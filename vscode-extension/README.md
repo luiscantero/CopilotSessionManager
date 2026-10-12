@@ -59,7 +59,7 @@ everything (a few seconds for about a thousand sessions); after that, only chang
 again, and a file watcher reports changes. The backend stops after 10 minutes without use while no
 session browser is open.
 
-There is also a standalone [desktop app](https://github.com/luiscantero/CopilotSessionSearch) with
+There is also a standalone [desktop app](https://github.com/luiscantero/CopilotSessionManager) with
 the same features, for use without VS Code. Project merges are shared with it
 (`project-merges.json` in `%APPDATA%/com.luiscantero.copilot-session-manager` on Windows).
 
@@ -102,4 +102,4 @@ The UI files in `media/app` are copied from `../src` by `npm run build:assets`.
 ## Feedback
 
 Report issues and ideas at
-[github.com/luiscantero/CopilotSessionSearch/issues](https://github.com/luiscantero/CopilotSessionSearch/issues).
+[github.com/luiscantero/CopilotSessionManager/issues](https://github.com/luiscantero/CopilotSessionManager/issues).

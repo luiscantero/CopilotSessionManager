@@ -118,7 +118,19 @@ extension: a quick search (`Ctrl+Alt+F`) over all sessions, the session browser 
 and **Resume in terminal** / **Open in VS Code chat** actions. The backend runs as a small sidecar
 process (`vscode-extension/sidecar`, built from this crate without the `gui` feature) that speaks
 JSON lines over stdio. See [vscode-extension/README.md](vscode-extension/README.md) for features
-and how to build the VSIX.
+and settings.
+
+Build and install the VSIX:
+
+```powershell
+cd vscode-extension
+npm install
+npm run package
+code --install-extension copilot-session-search-win32-x64-0.3.0.vsix
+```
+
+Or install the `.vsix` from VS Code's Extensions view (`...` > **Install from VSIX...**). Then press
+`Ctrl+Alt+F` to search, or run **Copilot Session Search: Open Session Browser**.
 
 The `src/` frontend is shared: it only shows the extra footer buttons when the host announces them
 (`window.__TAURI__.hostActions`), so the desktop app is unchanged.

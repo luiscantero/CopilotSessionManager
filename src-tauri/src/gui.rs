@@ -102,7 +102,7 @@ pub fn run() {
         .manage(window_state::WindowSizeState::default())
         .setup(|app| {
             if let Ok(path) = merges_path(app.handle()) {
-                lock(&app.state::<AppState>().index).merges = project_merges::Merges::load(&path);
+                lock(&app.state::<AppState>().index).merges = load_merges(&path);
             }
             if let Some(window) = app.get_webview_window("main") {
                 if let Err(err) = window_state::restore(&window) {
@@ -129,5 +129,5 @@ pub fn run() {
             unmerge_project
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Copilot Session Search");
+        .expect("error while running Session Manager for GitHub Copilot");
 }

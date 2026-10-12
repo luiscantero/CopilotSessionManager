@@ -1,16 +1,16 @@
 [package]
-name = "copilot-session-search-sidecar"
+name = "copilot-session-manager-sidecar"
 version = "0.3.0"
-description = "JSON stdio backend of the Copilot Session Search VS Code extension"
+description = "JSON stdio backend of the Session Manager for GitHub Copilot VS Code extension"
 edition = "2021"
 publish = false
 
 [[bin]]
-name = "copilot-session-search-sidecar"
+name = "copilot-session-manager-sidecar"
 path = "src/main.rs"
 
 [dependencies]
-copilot-session-search = { path = "../../src-tauri", default-features = false }
+copilot-session-manager = { path = "../../src-tauri", default-features = false }
 
 [profile.release]
 lto = true

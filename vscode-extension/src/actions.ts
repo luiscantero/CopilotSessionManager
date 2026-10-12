@@ -18,7 +18,7 @@ export async function resumeInTerminal(session: SessionSummary): Promise<void> {
       return;
     }
   }
-  const command = vscode.workspace.getConfiguration("copilotSessionSearch").get<string>("copilotCommand")?.trim() || "copilot";
+  const command = vscode.workspace.getConfiguration("copilotSessionManager").get<string>("copilotCommand")?.trim() || "copilot";
   const cwd = session.cwd && fs.existsSync(session.cwd) ? session.cwd : undefined;
   const terminal = vscode.window.createTerminal({
     name: `Copilot: ${truncate(session.title, 40)}`,

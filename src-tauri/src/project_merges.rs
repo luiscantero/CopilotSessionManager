@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn saves_and_loads_merges() {
         let dir = std::env::temp_dir().join(format!(
-            "copilot-session-search-merges-{}",
+            "copilot-session-manager-merges-{}",
             std::process::id()
         ));
         let path = dir.join("nested").join(FILE_NAME);

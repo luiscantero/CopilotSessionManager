@@ -4,7 +4,7 @@ import * as vscode from "vscode";
 import { openInChat, resumeInTerminal } from "./actions";
 import { SessionDetail, Sidecar } from "./sidecar";
 
-export const VIEW_TYPE = "copilotSessionSearch";
+export const VIEW_TYPE = "copilotSessionManager";
 const STORAGE_KEY = "webviewStorage";
 /** Commands the extension handles itself instead of the backend; shown as extra buttons in the app. */
 const HOST_ACTIONS = ["resume_session", "open_in_chat"];

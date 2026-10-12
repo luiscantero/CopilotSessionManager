@@ -1,16 +1,16 @@
 [package]
-name = "copilot-session-search"
+name = "copilot-session-manager"
 version = "0.3.0"
 description = "Search local GitHub Copilot sessions"
 edition = "2021"
 publish = false
 
 [lib]
-name = "copilot_session_search_lib"
+name = "copilot_session_manager_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
-name = "copilot-session-search"
+name = "copilot-session-manager"
 path = "src/main.rs"
 required-features = ["gui"]
 

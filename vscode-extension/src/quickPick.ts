@@ -123,7 +123,7 @@ export async function searchSessions(context: vscode.ExtensionContext, sidecar: 
 }
 
 function runDefaultAction(context: vscode.ExtensionContext, sidecar: Sidecar, hit: SearchHit, query: string): void {
-  const action = vscode.workspace.getConfiguration("copilotSessionSearch").get<string>("quickPick.defaultAction");
+  const action = vscode.workspace.getConfiguration("copilotSessionManager").get<string>("quickPick.defaultAction");
   if (action === "resume") {
     resumeInTerminal(hit);
   } else if (action === "openInChat") {

@@ -27,7 +27,7 @@ if (all || args.includes("--sidecar")) {
   const cargoArgs = ["build", "--release", ...(target ? ["--target", target] : [])];
   execFileSync("cargo", cargoArgs, { cwd: sidecar, stdio: "inherit" });
   const exe = process.platform === "win32" || target?.includes("windows") ? ".exe" : "";
-  const name = `copilot-session-search-sidecar${exe}`;
+  const name = `copilot-session-manager-sidecar${exe}`;
   const built = join(sidecar, "target", ...(target ? [target] : []), "release", name);
   if (!existsSync(built)) {
     throw new Error(`Sidecar not found at ${built}`);

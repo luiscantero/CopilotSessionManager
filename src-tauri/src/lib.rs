@@ -345,6 +345,31 @@ fn config_base_dir() -> Option<PathBuf> {
     }
 }
 
+/// Same as `identifier` in `tauri.conf.json`. The desktop app and the VS Code extension share
+/// this config folder, so project merges apply to both.
+const APP_IDENTIFIER: &str = "com.lcantero.copilot-session-manager";
+/// Config folder used while the app was called "Copilot Session Search".
+const LEGACY_APP_IDENTIFIER: &str = "com.lcantero.copilot-session-search";
+
+fn app_config_path(file: &str) -> Option<PathBuf> {
+    config_base_dir().map(|dir| dir.join(APP_IDENTIFIER).join(file))
+}
+
+/// Loads the project merges, falling back to the file saved under the app's former name until
+/// the next merge saves them to `path`.
+fn load_merges(path: &Path) -> project_merges::Merges {
+    if !path.exists() {
+        let legacy = config_base_dir().map(|dir| {
+            dir.join(LEGACY_APP_IDENTIFIER)
+                .join(project_merges::FILE_NAME)
+        });
+        if let Some(legacy) = legacy.filter(|legacy| legacy.exists()) {
+            return project_merges::Merges::load(&legacy);
+        }
+    }
+    project_merges::Merges::load(path)
+}
+
 fn copilot_dir() -> Result<PathBuf, String> {
     if let Some(dir) = std::env::var_os("COPILOT_HOME") {
         return Ok(PathBuf::from(dir));
@@ -1055,7 +1080,7 @@ mod tests {
 
     fn temp_file(name: &str, content: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "copilot-session-search-{}-{name}",
+            "copilot-session-manager-{}-{name}",
             std::process::id()
         ));
         fs::write(&path, content).unwrap();
@@ -1135,7 +1160,7 @@ mod tests {
     fn delete_refuses_live_sessions_and_removes_stale_ones() {
         let id = "00000000-0000-4000-8000-000000000001";
         let root = std::env::temp_dir().join(format!(
-            "copilot-session-search-root-{}",
+            "copilot-session-manager-root-{}",
             std::process::id()
         ));
         let dir = root.join(id);
@@ -1369,7 +1394,7 @@ mod tests {
     #[test]
     fn merges_renamed_projects_and_flags_missing_folders() {
         let current = std::env::temp_dir().join(format!(
-            "copilot-session-search-merge-{}",
+            "copilot-session-manager-merge-{}",
             std::process::id()
         ));
         fs::create_dir_all(&current).unwrap();

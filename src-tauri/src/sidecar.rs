@@ -11,9 +11,6 @@ use serde::Deserialize;
 use serde_json::json;
 use std::io::{self, Write};
 
-/// Same as `identifier` in `tauri.conf.json`: project merges are shared with the desktop app.
-const APP_IDENTIFIER: &str = "com.lcantero.copilot-session-search";
-
 #[derive(Deserialize)]
 struct Request {
     #[serde(default)]
@@ -24,11 +21,10 @@ struct Request {
 }
 
 pub fn run() {
-    let merges_path =
-        config_base_dir().map(|dir| dir.join(APP_IDENTIFIER).join(project_merges::FILE_NAME));
+    let merges_path = app_config_path(project_merges::FILE_NAME);
     let mut index = Index::default();
     if let Some(path) = &merges_path {
-        index.merges = project_merges::Merges::load(path);
+        index.merges = load_merges(path);
     }
     spawn_watcher(|| write_line(&json!({ "event": watcher::CHANGED_EVENT })));
 

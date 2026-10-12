@@ -1211,7 +1211,7 @@ mod tests {
 
     fn temp_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "copilot-session-search-{}-{name}",
+            "copilot-session-manager-{}-{name}",
             std::process::id()
         ))
     }

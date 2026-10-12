@@ -134,7 +134,7 @@ export class Sidecar implements vscode.Disposable {
     });
     child.on("exit", (code, signal) => {
       this.log.appendLine(`Backend exited (code ${code}, signal ${signal})`);
-      this.onExit(child, "The search backend stopped unexpectedly. See the Copilot Session Search log.");
+      this.onExit(child, "The search backend stopped unexpectedly. See the Session Manager for GitHub Copilot log.");
     });
     return child;
   }
@@ -204,11 +204,11 @@ export class Sidecar implements vscode.Disposable {
   }
 
   private binaryPath(): string {
-    const configured = vscode.workspace.getConfiguration("copilotSessionSearch").get<string>("sidecarPath")?.trim();
+    const configured = vscode.workspace.getConfiguration("copilotSessionManager").get<string>("sidecarPath")?.trim();
     if (configured) {
       return configured;
     }
-    const name = process.platform === "win32" ? "copilot-session-search-sidecar.exe" : "copilot-session-search-sidecar";
+    const name = process.platform === "win32" ? "copilot-session-manager-sidecar.exe" : "copilot-session-manager-sidecar";
     const bundled = path.join(this.extensionPath, "bin", name);
     if (!fs.existsSync(bundled)) {
       throw new Error(

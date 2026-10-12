@@ -1,7 +1,9 @@
-# Copilot Session Search
+# Session Manager for GitHub Copilot
 
 A small Rust + [Tauri 2](https://tauri.app) desktop app to find, read, resume and clean up
 local GitHub Copilot (CLI / VS Code agent) sessions. Styled after VS Code Dark Modern.
+Formerly called "Copilot Session Search". This is an unofficial tool, not affiliated with GitHub
+or Microsoft.
 
 ## Features
 
@@ -19,7 +21,9 @@ local GitHub Copilot (CLI / VS Code agent) sessions. Styled after VS Code Dark M
   project, and merges can be undone from the same dialog. Projects whose folder no longer exists
   are marked "folder missing" as merge candidates. Merges only affect grouping in this app and are
   saved in `project-merges.json` in the app's config folder
-  (`%APPDATA%/com.lcantero.copilot-session-search` on Windows).
+  (`%APPDATA%/com.lcantero.copilot-session-manager` on Windows). Merges saved under the former
+  name (`com.lcantero.copilot-session-search`) are still read until the next merge saves them in
+  the new folder.
 - Copy button on every message bubble.
 - Footer with the resume command (`copilot --resume=<id>`, copy button), **Set as done** and
   **Delete**.
@@ -126,11 +130,11 @@ Build and install the VSIX:
 cd vscode-extension
 npm install
 npm run package
-code --install-extension copilot-session-search-win32-x64-0.3.0.vsix
+code --install-extension copilot-session-manager-win32-x64-0.3.0.vsix
 ```
 
 Or install the `.vsix` from VS Code's Extensions view (`...` > **Install from VSIX...**). Then press
-`Ctrl+Alt+F` to search, or run **Copilot Session Search: Open Session Browser**.
+`Ctrl+Alt+F` to search, or run **Session Manager for GitHub Copilot: Open Session Browser**.
 
 The `src/` frontend is shared: it only shows the extra footer buttons when the host announces them
 (`window.__TAURI__.hostActions`), so the desktop app is unchanged.

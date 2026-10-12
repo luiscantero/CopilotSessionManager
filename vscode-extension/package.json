@@ -1,6 +1,6 @@
 {
-  "name": "copilot-session-search",
-  "displayName": "Copilot Session Search",
+  "name": "copilot-session-manager",
+  "displayName": "Session Manager for GitHub Copilot",
   "description": "Full-text search across your local GitHub Copilot CLI sessions and VS Code chats. Read, resume, open, merge and delete them.",
   "version": "0.3.0",
   "publisher": "lcantero",
@@ -27,44 +27,44 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
-    "onWebviewPanel:copilotSessionSearch"
+    "onWebviewPanel:copilotSessionManager"
   ],
   "contributes": {
     "commands": [
       {
-        "command": "copilotSessionSearch.search",
+        "command": "copilotSessionManager.search",
         "title": "Search Sessions…",
-        "category": "Copilot Session Search",
+        "category": "Session Manager for GitHub Copilot",
         "icon": "$(search)"
       },
       {
-        "command": "copilotSessionSearch.open",
+        "command": "copilotSessionManager.open",
         "title": "Open Session Browser",
-        "category": "Copilot Session Search",
+        "category": "Session Manager for GitHub Copilot",
         "icon": "$(history)"
       },
       {
-        "command": "copilotSessionSearch.showLog",
+        "command": "copilotSessionManager.showLog",
         "title": "Show Log",
-        "category": "Copilot Session Search"
+        "category": "Session Manager for GitHub Copilot"
       }
     ],
     "keybindings": [
       {
-        "command": "copilotSessionSearch.search",
+        "command": "copilotSessionManager.search",
         "key": "ctrl+alt+f",
         "mac": "cmd+alt+f"
       }
     ],
     "configuration": {
-      "title": "Copilot Session Search",
+      "title": "Session Manager for GitHub Copilot",
       "properties": {
-        "copilotSessionSearch.copilotCommand": {
+        "copilotSessionManager.copilotCommand": {
           "type": "string",
           "default": "copilot",
           "markdownDescription": "Command used to start the GitHub Copilot CLI when resuming a session in the terminal. `--resume=<id>` is appended."
         },
-        "copilotSessionSearch.quickPick.defaultAction": {
+        "copilotSessionManager.quickPick.defaultAction": {
           "type": "string",
           "enum": [
             "showConversation",
@@ -79,11 +79,11 @@
           "default": "showConversation",
           "description": "What happens when you press Enter on a session in the quick search."
         },
-        "copilotSessionSearch.sidecarPath": {
+        "copilotSessionManager.sidecarPath": {
           "type": "string",
           "default": "",
           "scope": "machine",
-          "description": "Path to a custom build of the search backend (copilot-session-search-sidecar). Leave empty to use the bundled one."
+          "description": "Path to a custom build of the search backend (copilot-session-manager-sidecar). Leave empty to use the bundled one."
         }
       }
     }

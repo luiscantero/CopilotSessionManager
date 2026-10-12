@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "copilot-session-search"
+name = "copilot-session-manager"
 version = "0.3.0"
 dependencies = [
  "notify",
@@ -32,10 +32,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "copilot-session-search-sidecar"
+name = "copilot-session-manager-sidecar"
 version = "0.3.0"
 dependencies = [
- "copilot-session-search",
+ "copilot-session-manager",
 ]
 
 [[package]]

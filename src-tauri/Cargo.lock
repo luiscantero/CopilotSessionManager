@@ -349,7 +349,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "copilot-session-search"
+name = "copilot-session-manager"
 version = "0.3.0"
 dependencies = [
  "notify",

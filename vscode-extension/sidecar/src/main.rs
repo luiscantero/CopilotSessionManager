@@ -1,3 +1,3 @@
 fn main() {
-    copilot_session_search_lib::run_sidecar();
+    copilot_session_manager_lib::run_sidecar();
 }

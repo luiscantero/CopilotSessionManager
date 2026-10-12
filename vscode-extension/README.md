@@ -1,20 +1,20 @@
-# Copilot Session Search for VS Code
+# Session Manager for GitHub Copilot (VS Code extension)
 
 Full-text search across your local **GitHub Copilot CLI sessions** and **VS Code chats**, right
-inside VS Code. It is the [Copilot Session Search](https://github.com/luiscantero/CopilotSessionSearch)
+inside VS Code. It is the [Session Manager for GitHub Copilot](https://github.com/luiscantero/CopilotSessionSearch)
 desktop app packaged as an extension: the same Rust search backend and the same UI, themed like
-your editor.
+your editor. Unofficial; not affiliated with GitHub or Microsoft.
 
 ## Features
 
-- **Quick search** (`Ctrl+Alt+F`, `Cmd+Alt+F` on macOS, or *Copilot Session Search: Search
+- **Quick search** (`Ctrl+Alt+F`, `Cmd+Alt+F` on macOS, or *Session Manager for GitHub Copilot: Search
   Sessions…*): type to search session titles and every user and Copilot message. All terms must
   match (case-insensitive). Results show the project, age, badges and the matching message.
   - `Enter` shows the conversation in the session browser (configurable, see below).
   - Item buttons: **Resume in terminal** (Copilot CLI sessions), **Open in VS Code chat** and
     **Copy resume command**.
   - Title buttons: show or hide sessions marked as done, and open the session browser.
-- **Session browser** (*Copilot Session Search: Open Session Browser*): a session list and a
+- **Session browser** (*Session Manager for GitHub Copilot: Open Session Browser*): a session list and a
   conversation reader in an editor tab, with highlighting of matches, a repository filter,
   project merging for renamed or moved repositories, copy buttons and delete. It updates
   automatically while sessions change on disk.
@@ -29,7 +29,7 @@ your editor.
 
 ## How it works
 
-The extension starts a small native backend (`bin/copilot-session-search-sidecar`) and talks to it
+The extension starts a small native backend (`bin/copilot-session-manager-sidecar`) and talks to it
 with JSON lines over stdio. The backend keeps an in-memory index of
 `~/.copilot/session-state/*/events.jsonl` and VS Code's chat storage. The first search after
 starting indexes everything (a few seconds for about a thousand sessions); after that, only
@@ -38,15 +38,15 @@ written to disk except when you delete a session or merge projects. The backend 
 minutes without use while no session browser is open.
 
 Project merges are shared with the desktop app (`project-merges.json` in
-`%APPDATA%/com.lcantero.copilot-session-search` on Windows).
+`%APPDATA%/com.lcantero.copilot-session-manager` on Windows).
 
 ## Settings
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| `copilotSessionSearch.quickPick.defaultAction` | `showConversation` | What `Enter` does in the quick search: `showConversation`, `resume` or `openInChat`. |
-| `copilotSessionSearch.copilotCommand` | `copilot` | Command used to resume Copilot CLI sessions (`--resume=<id>` is appended). |
-| `copilotSessionSearch.sidecarPath` | | Path to a custom build of the backend. |
+| `copilotSessionManager.quickPick.defaultAction` | `showConversation` | What `Enter` does in the quick search: `showConversation`, `resume` or `openInChat`. |
+| `copilotSessionManager.copilotCommand` | `copilot` | Command used to resume Copilot CLI sessions (`--resume=<id>` is appended). |
+| `copilotSessionManager.sidecarPath` | | Path to a custom build of the backend. |
 
 ## Build from source
 
@@ -55,8 +55,8 @@ Requirements: Node.js 20+, Rust (stable).
 ```powershell
 cd vscode-extension
 npm install
-npm run package   # copies ../src, builds the sidecar and TypeScript, writes copilot-session-search-<platform>-<version>.vsix
-code --install-extension copilot-session-search-win32-x64-0.3.0.vsix
+npm run package   # copies ../src, builds the sidecar and TypeScript, writes copilot-session-manager-<platform>-<version>.vsix
+code --install-extension copilot-session-manager-win32-x64-0.3.0.vsix
 ```
 
 The VSIX contains a native binary, so it is platform-specific. `npm run package` builds for the

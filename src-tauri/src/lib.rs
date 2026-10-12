@@ -347,9 +347,12 @@ fn config_base_dir() -> Option<PathBuf> {
 
 /// Same as `identifier` in `tauri.conf.json`. The desktop app and the VS Code extension share
 /// this config folder, so project merges apply to both.
-const APP_IDENTIFIER: &str = "com.lcantero.copilot-session-manager";
-/// Folder name used while the app was called "Copilot Session Search".
-const LEGACY_APP_IDENTIFIER: &str = "com.lcantero.copilot-session-search";
+const APP_IDENTIFIER: &str = "com.luiscantero.copilot-session-manager";
+/// Former identifiers, newest first: data in newer folders wins over older ones.
+const LEGACY_APP_IDENTIFIERS: [&str; 2] = [
+    "com.lcantero.copilot-session-manager",
+    "com.lcantero.copilot-session-search",
+];
 
 /// Per-user folder for local (non-roaming) app data, where Tauri keeps the WebView storage.
 fn local_data_base_dir() -> Option<PathBuf> {
@@ -368,17 +371,16 @@ fn app_config_path(file: &str) -> Option<PathBuf> {
     config_base_dir().map(|dir| dir.join(APP_IDENTIFIER).join(file))
 }
 
-/// Moves the settings, project merges and WebView data saved under the app's former name to the
-/// current folders. Must run before the WebView starts.
+/// Moves the settings, project merges and WebView data saved under the app's former identifiers
+/// to the current folders. Must run before the WebView starts.
 fn migrate_legacy_app_dirs() {
     for base in [config_base_dir(), local_data_base_dir()]
         .into_iter()
         .flatten()
     {
-        migrate_dir(
-            &base.join(LEGACY_APP_IDENTIFIER),
-            &base.join(APP_IDENTIFIER),
-        );
+        for legacy in LEGACY_APP_IDENTIFIERS {
+            migrate_dir(&base.join(legacy), &base.join(APP_IDENTIFIER));
+        }
     }
 }
 

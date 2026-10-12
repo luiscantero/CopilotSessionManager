@@ -38,7 +38,7 @@ written to disk except when you delete a session or merge projects. The backend 
 minutes without use while no session browser is open.
 
 Project merges are shared with the desktop app (`project-merges.json` in
-`%APPDATA%/com.lcantero.copilot-session-manager` on Windows).
+`%APPDATA%/com.luiscantero.copilot-session-manager` on Windows).
 
 ## Settings
 

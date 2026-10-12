@@ -1,0 +1,143 @@
+/* Maps the shared app's colours (src/styles.css) to the current VS Code theme. */
+:root {
+  --bg: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  --editor-bg: var(--vscode-editor-background);
+  --panel-bg: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  --border: var(--vscode-panel-border, var(--vscode-widget-border, transparent));
+  --fg: var(--vscode-foreground);
+  --fg-strong: var(--vscode-editor-foreground, var(--vscode-foreground));
+  --fg-muted: var(--vscode-descriptionForeground);
+  --fg-dim: var(--vscode-disabledForeground, var(--vscode-descriptionForeground));
+  --accent: var(--vscode-button-background);
+  --focus: var(--vscode-focusBorder);
+  --input-bg: var(--vscode-input-background);
+  --input-border: var(--vscode-input-border, var(--vscode-widget-border, transparent));
+  --hover: var(--vscode-list-hoverBackground);
+  --selected: var(--vscode-list-inactiveSelectionBackground);
+  --selected-focus: var(--vscode-list-activeSelectionBackground);
+  --match: var(--vscode-editor-findMatchHighlightBackground);
+  --added: var(--vscode-gitDecoration-addedResourceForeground, #81b88b);
+  --deleted: var(--vscode-gitDecoration-deletedResourceForeground, #f14c4c);
+  --danger: var(--vscode-errorForeground);
+  --user-bubble: var(--vscode-editorWidget-background);
+  --assistant-bubble: var(--vscode-editor-background);
+  --code-bg: var(--vscode-textCodeBlock-background);
+  --link: var(--vscode-textLink-foreground);
+  --font: var(--vscode-font-family);
+  --mono: var(--vscode-editor-font-family);
+}
+
+html,
+body {
+  font-size: var(--vscode-font-size, 13px);
+}
+
+.session-list:focus .session-item.selected {
+  color: var(--vscode-list-activeSelectionForeground, inherit);
+}
+
+.icon-button:hover:not(:disabled),
+.icon-button[aria-pressed="true"] {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.select option {
+  background: var(--vscode-dropdown-background);
+  color: var(--vscode-dropdown-foreground);
+}
+
+.badge.live,
+.message.user .message-header .role svg,
+.markdown .link {
+  color: var(--link);
+}
+
+.badge.live {
+  border-color: var(--link);
+}
+
+.badge.protected {
+  border-color: var(--vscode-editorWarning-foreground);
+  color: var(--vscode-editorWarning-foreground);
+}
+
+.badge.vscode {
+  border-color: var(--vscode-charts-blue, var(--link));
+  color: var(--vscode-charts-blue, var(--link));
+}
+
+.message.user {
+  border-color: var(--vscode-widget-border, var(--input-border));
+}
+
+.markdown code {
+  color: var(--vscode-textPreformat-foreground);
+}
+
+.markdown pre {
+  background: var(--code-bg);
+}
+
+.markdown blockquote {
+  border-inline-start-color: var(--vscode-textBlockQuote-border);
+}
+
+.markdown th {
+  background: var(--vscode-editorWidget-background);
+}
+
+.markdown .link {
+  text-decoration-color: currentColor;
+}
+
+.dialog-backdrop {
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.dialog,
+.toast {
+  border-color: var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
+  background: var(--vscode-editorWidget-background);
+  color: var(--vscode-editorWidget-foreground, var(--fg));
+  box-shadow: 0 4px 16px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.45));
+}
+
+.button.primary {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.button.primary:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.button.secondary {
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+}
+
+.button.secondary:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.button.danger {
+  background: var(--vscode-errorForeground);
+  color: var(--vscode-editor-background);
+}
+
+.button.danger:hover {
+  background: var(--vscode-errorForeground);
+  filter: brightness(1.1);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--vscode-scrollbarSlider-background);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--vscode-scrollbarSlider-hoverBackground);
+}
+
+::-webkit-scrollbar-thumb:active {
+  background: var(--vscode-scrollbarSlider-activeBackground);
+}

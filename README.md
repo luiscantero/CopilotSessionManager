@@ -111,6 +111,18 @@ cargo test --release -- --include-ignored --nocapture
 cargo clippy --all-targets -- -D warnings
 ```
 
+## VS Code extension
+
+[vscode-extension/](vscode-extension/) packages the same search backend and UI as a VS Code
+extension: a quick search (`Ctrl+Alt+F`) over all sessions, the session browser in an editor tab,
+and **Resume in terminal** / **Open in VS Code chat** actions. The backend runs as a small sidecar
+process (`vscode-extension/sidecar`, built from this crate without the `gui` feature) that speaks
+JSON lines over stdio. See [vscode-extension/README.md](vscode-extension/README.md) for features
+and how to build the VSIX.
+
+The `src/` frontend is shared: it only shows the extra footer buttons when the host announces them
+(`window.__TAURI__.hostActions`), so the desktop app is unchanged.
+
 ## Limitations
 
 - **Set as done** is display-only for now. VS Code owns that state in `agent-host.db`

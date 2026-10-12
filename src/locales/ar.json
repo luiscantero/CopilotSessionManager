@@ -37,6 +37,8 @@
   "footer.noSession": "لم يتم تحديد أي جلسة",
   "footer.noCommand": "لا يتوفر أي أمر",
   "footer.copyResume": "نسخ أمر الاستئناف",
+  "footer.resumeInTerminal": "استئناف في الوحدة الطرفية",
+  "footer.openInChat": "فتح في دردشة VS Code",
   "footer.openInVsCode": "يفتح مجلد الدردشة في VS Code، وتظهر الدردشة في طريقة عرض الدردشة في VS Code",
   "footer.noFolder": "لا يوجد مجلد لفتحه لهذه الدردشة",
   "footer.runFrom": "التشغيل من {folder}",

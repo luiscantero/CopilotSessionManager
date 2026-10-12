@@ -37,6 +37,8 @@
   "footer.noSession": "ไม่ได้เลือกเซสชัน",
   "footer.noCommand": "ไม่มีคำสั่งที่พร้อมใช้งาน",
   "footer.copyResume": "คัดลอกคำสั่งดำเนินการต่อ",
+  "footer.resumeInTerminal": "ดำเนินการต่อในเทอร์มินัล",
+  "footer.openInChat": "เปิดในแชท VS Code",
   "footer.openInVsCode": "เปิดโฟลเดอร์ของแชทใน VS Code โดยแชทจะแสดงอยู่ในมุมมองแชทของ VS Code",
   "footer.noFolder": "แชทนี้ไม่มีโฟลเดอร์ให้เปิด",
   "footer.runFrom": "เรียกใช้จาก {folder}",

@@ -37,6 +37,8 @@
   "footer.noSession": "Ingen session har valts",
   "footer.noCommand": "Inget kommando är tillgängligt",
   "footer.copyResume": "Kopiera kommandot för att återuppta",
+  "footer.resumeInTerminal": "Återuppta i terminalen",
+  "footer.openInChat": "Öppna i VS Code-chatten",
   "footer.openInVsCode": "Öppnar chattens mapp i VS Code; chatten visas i chattvyn i VS Code",
   "footer.noFolder": "Den här chatten har ingen mapp att öppna",
   "footer.runFrom": "Kör från {folder}",

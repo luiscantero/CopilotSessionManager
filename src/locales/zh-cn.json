@@ -37,6 +37,8 @@
   "footer.noSession": "未选择会话",
   "footer.noCommand": "没有可用的命令",
   "footer.copyResume": "复制恢复命令",
+  "footer.resumeInTerminal": "在终端中恢复",
+  "footer.openInChat": "在 VS Code 聊天中打开",
   "footer.openInVsCode": "在 VS Code 中打开聊天的文件夹；该聊天会列在 VS Code 的聊天视图中",
   "footer.noFolder": "此聊天没有可打开的文件夹",
   "footer.runFrom": "从 {folder} 运行",

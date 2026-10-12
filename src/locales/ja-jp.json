@@ -37,6 +37,8 @@
   "footer.noSession": "セッションが選択されていません",
   "footer.noCommand": "使用できるコマンドがありません",
   "footer.copyResume": "再開コマンドをコピー",
+  "footer.resumeInTerminal": "ターミナルで再開",
+  "footer.openInChat": "VS Code チャットで開く",
   "footer.openInVsCode": "チャットのフォルダーを VS Code で開きます。チャットは VS Code のチャット ビューに表示されます",
   "footer.noFolder": "このチャットには開くフォルダーがありません",
   "footer.runFrom": "{folder} から実行",

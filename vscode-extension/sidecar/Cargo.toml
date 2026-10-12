@@ -1,0 +1,18 @@
+[package]
+name = "copilot-session-search-sidecar"
+version = "0.3.0"
+description = "JSON stdio backend of the Copilot Session Search VS Code extension"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "copilot-session-search-sidecar"
+path = "src/main.rs"
+
+[dependencies]
+copilot-session-search = { path = "../../src-tauri", default-features = false }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

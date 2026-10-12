@@ -1,0 +1,9 @@
+node_modules/
+out/
+bin/
+media/app/
+sidecar/target/
+*.vsix
+# Copied from the repository root by scripts/build.mjs
+/LICENSE
+/icon.png

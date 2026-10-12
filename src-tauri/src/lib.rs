@@ -6,14 +6,21 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use tauri::{AppHandle, Manager, Runtime, State};
 
+#[cfg(feature = "gui")]
+mod gui;
 mod project_merges;
+mod sidecar;
 mod vscode_chat;
 mod watcher;
+#[cfg(feature = "gui")]
 mod window_state;
+
+#[cfg(feature = "gui")]
+pub use gui::run;
+pub use sidecar::run as run_sidecar;
 
 const TITLE_MAX_CHARS: usize = 200;
 const SNIPPET_BEFORE_CHARS: usize = 60;
@@ -146,11 +153,6 @@ struct VsCodeLink {
     stamp: FileStamp,
     vscode_id: String,
     sdk_id: Option<String>,
-}
-
-#[derive(Default)]
-struct AppState {
-    index: Arc<Mutex<Index>>,
 }
 
 #[derive(Default)]
@@ -323,16 +325,24 @@ struct VsCodeState {
     deletions: Option<u64>,
 }
 
-fn lock(index: &Mutex<Index>) -> MutexGuard<'_, Index> {
-    index
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
+}
+
+/// Per-user application config folder (`%APPDATA%`, `~/Library/Application Support`,
+/// `$XDG_CONFIG_HOME` or `~/.config`).
+fn config_base_dir() -> Option<PathBuf> {
+    if cfg!(windows) {
+        std::env::var_os("APPDATA").map(PathBuf::from)
+    } else if cfg!(target_os = "macos") {
+        home_dir().map(|home| home.join("Library").join("Application Support"))
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| home_dir().map(|home| home.join(".config")))
+    }
 }
 
 fn copilot_dir() -> Result<PathBuf, String> {
@@ -349,22 +359,14 @@ fn session_root() -> Result<PathBuf, String> {
 }
 
 fn vscode_config_dirs() -> Vec<PathBuf> {
-    let base = if cfg!(windows) {
-        std::env::var_os("APPDATA").map(PathBuf::from)
-    } else if cfg!(target_os = "macos") {
-        home_dir().map(|home| home.join("Library").join("Application Support"))
-    } else {
-        std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| home_dir().map(|home| home.join(".config")))
-    };
-    base.map(|base| {
-        ["Code", "Code - Insiders"]
-            .iter()
-            .map(|name| base.join(name))
-            .collect()
-    })
-    .unwrap_or_default()
+    config_base_dir()
+        .map(|base| {
+            ["Code", "Code - Insiders"]
+                .iter()
+                .map(|name| base.join(name))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn is_session_id(id: &str) -> bool {
@@ -898,48 +900,16 @@ fn search(index: &Index, query: &str) -> Vec<SearchHit> {
         .collect()
 }
 
-async fn with_index<T, F>(state: &AppState, f: F) -> Result<T, String>
-where
-    T: Send + 'static,
-    F: FnOnce(&mut Index) -> Result<T, String> + Send + 'static,
-{
-    let index = state.index.clone();
-    tauri::async_runtime::spawn_blocking(move || f(&mut lock(&index)))
-        .await
-        .map_err(|err| err.to_string())?
-}
-
-#[tauri::command]
-async fn refresh_sessions(state: State<'_, AppState>) -> Result<usize, String> {
-    with_index(&state, |index| {
-        rebuild(index)?;
-        Ok(index.entries.len())
+fn session_detail(index: &Index, id: &str) -> Result<SessionDetail, String> {
+    let entry = index
+        .entries
+        .iter()
+        .find(|entry| entry.summary.id == id)
+        .ok_or_else(|| format!("Session {id} was not found"))?;
+    Ok(SessionDetail {
+        session: entry.summary.clone(),
+        messages: entry.events.messages.clone(),
     })
-    .await
-}
-
-#[tauri::command]
-async fn search_sessions(
-    state: State<'_, AppState>,
-    query: String,
-) -> Result<Vec<SearchHit>, String> {
-    with_index(&state, move |index| Ok(search(index, &query))).await
-}
-
-#[tauri::command]
-async fn get_session(state: State<'_, AppState>, id: String) -> Result<SessionDetail, String> {
-    with_index(&state, move |index| {
-        let entry = index
-            .entries
-            .iter()
-            .find(|entry| entry.summary.id == id)
-            .ok_or_else(|| format!("Session {id} was not found"))?;
-        Ok(SessionDetail {
-            session: entry.summary.clone(),
-            messages: entry.events.messages.clone(),
-        })
-    })
-    .await
 }
 
 fn delete_session_dir(root: &Path, id: &str, protected_dirs: &ProtectedDirs) -> Result<(), String> {
@@ -964,37 +934,27 @@ fn delete_session_dir(root: &Path, id: &str, protected_dirs: &ProtectedDirs) -> 
     fs::remove_dir_all(&dir).map_err(|err| format!("Unable to delete {}: {err}", dir.display()))
 }
 
-#[tauri::command]
-async fn delete_session(state: State<'_, AppState>, id: String) -> Result<(), String> {
+/// Deletes a Copilot CLI session folder or a VS Code chat and drops it from the index.
+fn delete_entry(index: &mut Index, id: &str) -> Result<(), String> {
     let id = id.to_ascii_lowercase();
     if !is_session_id(&id) {
         return Err("Invalid session id".to_string());
     }
-    with_index(&state, move |index| {
-        let entry = index.entries.iter().find(|entry| entry.summary.id == id);
-        if let Some(reason) = entry.and_then(|entry| entry.summary.protection.clone()) {
-            return Err(format!("This session is protected. {reason}"));
-        }
-        let source = entry.map_or("cli", |entry| entry.summary.source);
-        if source == "vscode" {
-            vscode_chat::delete(&vscode_config_dirs(), &id)?;
-        } else {
-            delete_session_dir(&session_root()?, &id, &ProtectedDirs::detect())?;
-            index.parsed.remove(&id);
-        }
-        index
-            .entries
-            .retain(|entry| !(entry.summary.id == id && entry.summary.source == source));
-        Ok(())
-    })
-    .await
-}
-
-fn merges_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    app.path()
-        .app_config_dir()
-        .map(|dir| dir.join(project_merges::FILE_NAME))
-        .map_err(|err| format!("Unable to locate the config folder: {err}"))
+    let entry = index.entries.iter().find(|entry| entry.summary.id == id);
+    if let Some(reason) = entry.and_then(|entry| entry.summary.protection.clone()) {
+        return Err(format!("This session is protected. {reason}"));
+    }
+    let source = entry.map_or("cli", |entry| entry.summary.source);
+    if source == "vscode" {
+        vscode_chat::delete(&vscode_config_dirs(), &id)?;
+    } else {
+        delete_session_dir(&session_root()?, &id, &ProtectedDirs::detect())?;
+        index.parsed.remove(&id);
+    }
+    index
+        .entries
+        .retain(|entry| !(entry.summary.id == id && entry.summary.source == source));
+    Ok(())
 }
 
 fn project_ref(project: &Project) -> project_merges::ProjectRef {
@@ -1026,113 +986,67 @@ fn list_project_infos(index: &Index) -> Vec<ProjectInfo> {
     projects
 }
 
-#[tauri::command]
-async fn list_projects(state: State<'_, AppState>) -> Result<Vec<ProjectInfo>, String> {
-    with_index(&state, |index| Ok(list_project_infos(index))).await
-}
-
-/// Groups the sessions of project `from` under project `into` (both current group keys).
-/// Returns the key of the resulting group.
-#[tauri::command]
-async fn merge_project(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    from: String,
-    into: String,
+/// Groups the sessions of project `from` under project `into` (both current group keys) and
+/// saves the merges to `path`. Returns the key of the resulting group.
+fn merge_projects(
+    index: &mut Index,
+    path: &Path,
+    from: &str,
+    into: &str,
 ) -> Result<String, String> {
-    let path = merges_path(&app)?;
-    with_index(&state, move |index| {
-        let find = |key: &str| {
-            index
-                .entries
-                .iter()
-                .map(|entry| &entry.summary.project)
-                .find(|project| project.key == key)
-                .map(project_ref)
-                .ok_or_else(|| format!("Project {key} was not found"))
-        };
-        let (from, into) = (find(&from)?, find(&into)?);
-        if from.key == into.key {
-            return Err("Choose a different project to merge into".to_string());
-        }
-        let mut merges = index.merges.clone();
-        merges.add(from, into.clone())?;
-        merges.save(&path)?;
-        index.merges = merges;
-        project_merges::apply(&mut index.entries, &index.merges);
-        Ok(into.key)
-    })
-    .await
+    let find = |key: &str| {
+        index
+            .entries
+            .iter()
+            .map(|entry| &entry.summary.project)
+            .find(|project| project.key == key)
+            .map(project_ref)
+            .ok_or_else(|| format!("Project {key} was not found"))
+    };
+    let (from, into) = (find(from)?, find(into)?);
+    if from.key == into.key {
+        return Err("Choose a different project to merge into".to_string());
+    }
+    let mut merges = index.merges.clone();
+    merges.add(from, into.clone())?;
+    merges.save(path)?;
+    index.merges = merges;
+    project_merges::apply(&mut index.entries, &index.merges);
+    Ok(into.key)
 }
 
-/// Undoes the merge of project `key` (it becomes its own group again).
-#[tauri::command]
-async fn unmerge_project(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    key: String,
-) -> Result<(), String> {
-    let path = merges_path(&app)?;
-    with_index(&state, move |index| {
-        let mut merges = index.merges.clone();
-        if !merges.remove(&key) {
-            return Err(format!("Project {key} is not merged"));
-        }
-        merges.save(&path)?;
-        index.merges = merges;
-        project_merges::apply(&mut index.entries, &index.merges);
-        Ok(())
-    })
-    .await
+/// Undoes the merge of project `key` (it becomes its own group again) and saves the merges.
+fn unmerge_project(index: &mut Index, path: &Path, key: &str) -> Result<(), String> {
+    let mut merges = index.merges.clone();
+    if !merges.remove(key) {
+        return Err(format!("Project {key} is not merged"));
+    }
+    merges.save(path)?;
+    index.merges = merges;
+    project_merges::apply(&mut index.entries, &index.merges);
+    Ok(())
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    tauri::Builder::default()
-        .manage(AppState::default())
-        .manage(window_state::WindowSizeState::default())
-        .setup(|app| {
-            if let Ok(path) = merges_path(app.handle()) {
-                lock(&app.state::<AppState>().index).merges = project_merges::Merges::load(&path);
-            }
-            if let Some(window) = app.get_webview_window("main") {
-                if let Err(err) = window_state::restore(&window) {
-                    eprintln!("Unable to restore window size: {err}");
-                    window.show()?;
-                }
-            }
-            watcher::spawn(
-                app.handle().clone(),
-                session_root().ok(),
-                vscode_config_dirs()
-                    .into_iter()
-                    .map(|dir| dir.join("User").join("globalStorage"))
-                    .collect(),
-                vscode_config_dirs()
-                    .into_iter()
-                    .flat_map(|dir| {
-                        let user = dir.join("User");
-                        [
-                            user.join("workspaceStorage"),
-                            user.join("globalStorage").join("emptyWindowChatSessions"),
-                        ]
-                    })
-                    .collect(),
-            );
-            Ok(())
-        })
-        .on_window_event(window_state::handle_event)
-        .invoke_handler(tauri::generate_handler![
-            refresh_sessions,
-            search_sessions,
-            get_session,
-            delete_session,
-            list_projects,
-            merge_project,
-            unmerge_project
-        ])
-        .run(tauri::generate_context!())
-        .expect("error while running Copilot Session Search");
+/// Watches the Copilot and VS Code session stores and calls `notify` after changes.
+fn spawn_watcher(notify: impl Fn() + Send + 'static) {
+    watcher::spawn(
+        notify,
+        session_root().ok(),
+        vscode_config_dirs()
+            .into_iter()
+            .map(|dir| dir.join("User").join("globalStorage"))
+            .collect(),
+        vscode_config_dirs()
+            .into_iter()
+            .flat_map(|dir| {
+                let user = dir.join("User");
+                [
+                    user.join("workspaceStorage"),
+                    user.join("globalStorage").join("emptyWindowChatSessions"),
+                ]
+            })
+            .collect(),
+    );
 }
 
 #[cfg(test)]

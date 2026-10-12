@@ -7,12 +7,13 @@
 //! and throttled. A slow periodic poll covers anything the watcher cannot see, such as a
 //! Copilot process exiting without removing its `inuse.<pid>.hold` lock file, or VS Code
 //! archiving a chat (stored in its frequently written `state.vscdb`).
+//! The frontend is notified through a callback (a Tauri event in the desktop app, a JSON line
+//! from the sidecar used by the VS Code extension).
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Runtime};
 
 pub const CHANGED_EVENT: &str = "sessions-changed";
 
@@ -33,8 +34,8 @@ struct Targets {
     chat_dirs: Vec<PathBuf>,
 }
 
-pub fn spawn<R: Runtime>(
-    app: AppHandle<R>,
+pub fn spawn(
+    notify: impl Fn() + Send + 'static,
     session_root: Option<PathBuf>,
     storage_dirs: Vec<PathBuf>,
     chat_dirs: Vec<PathBuf>,
@@ -46,13 +47,13 @@ pub fn spawn<R: Runtime>(
     };
     let spawned = std::thread::Builder::new()
         .name("session-watcher".to_string())
-        .spawn(move || run(&app, &targets));
+        .spawn(move || run(&notify, &targets));
     if let Err(err) = spawned {
         eprintln!("Unable to start the session watcher: {err}");
     }
 }
 
-fn run<R: Runtime>(app: &AppHandle<R>, targets: &Targets) {
+fn run(notify: &dyn Fn(), targets: &Targets) {
     let (tx, rx) = mpsc::channel::<EventResult>();
     let mut watcher = match notify::recommended_watcher(tx.clone()) {
         Ok(watcher) => Some(watcher),
@@ -85,9 +86,7 @@ fn run<R: Runtime>(app: &AppHandle<R>, targets: &Targets) {
             // Unreachable while `tx` is alive; stop rather than spin.
             Err(RecvTimeoutError::Disconnected) => return,
         }
-        if let Err(err) = app.emit(CHANGED_EVENT, ()) {
-            eprintln!("Unable to notify session changes: {err}");
-        }
+        notify();
         last_emit = Instant::now();
     }
 }

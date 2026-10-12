@@ -1,0 +1,8 @@
+src/**
+sidecar/**
+scripts/**
+node_modules/**
+out/**/*.map
+tsconfig.json
+*.vsix
+.gitignore

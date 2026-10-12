@@ -37,6 +37,8 @@
   "footer.noSession": "Aucune session sélectionnée",
   "footer.noCommand": "Aucune commande disponible",
   "footer.copyResume": "Copier la commande de reprise",
+  "footer.resumeInTerminal": "Reprendre dans le terminal",
+  "footer.openInChat": "Ouvrir dans la conversation VS Code",
   "footer.openInVsCode": "Ouvre le dossier de la conversation dans VS Code\u00a0; la conversation est répertoriée dans la vue Conversation de VS Code",
   "footer.noFolder": "Cette conversation n'a aucun dossier à ouvrir",
   "footer.runFrom": "Exécuter depuis {folder}",

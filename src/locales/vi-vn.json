@@ -37,6 +37,8 @@
   "footer.noSession": "Chưa chọn phiên nào",
   "footer.noCommand": "Không có lệnh nào",
   "footer.copyResume": "Sao chép lệnh tiếp tục",
+  "footer.resumeInTerminal": "Tiếp tục trong terminal",
+  "footer.openInChat": "Mở trong trò chuyện VS Code",
   "footer.openInVsCode": "Mở thư mục của cuộc trò chuyện trong VS Code; cuộc trò chuyện được liệt kê trong dạng xem Trò chuyện của VS Code",
   "footer.noFolder": "Cuộc trò chuyện này không có thư mục để mở",
   "footer.runFrom": "Chạy từ {folder}",

@@ -1,13 +1,17 @@
 "use strict";
 
 const invoke = window.__TAURI__?.core?.invoke;
+// Extra session actions offered by the host (the VS Code extension), called through invoke.
+const HOST_ACTIONS = new Set(window.__TAURI__?.hostActions || []);
 
 const ICONS = {
+  chat: '<svg viewBox="0 0 16 16"><path d="M2.5 3.5h11v7.5h-6.5l-3 2.5V11h-1.5z"/></svg>',
   check: '<svg viewBox="0 0 16 16"><path d="M3 8.5l3 3 7-7"/></svg>',
   checkAll: '<svg viewBox="0 0 16 16"><path d="M1.5 8.5l3 3 7-7M7.4 11.1l.9.9 6.2-6.2"/></svg>',
   close: '<svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
   copilot: '<svg viewBox="0 0 16 16"><path d="M4 6.2C4 4.4 5.4 3 7.2 3h1.6C10.6 3 12 4.4 12 6.2v3.6c0 1.8-1.4 3.2-3.2 3.2H7.2C5.4 13 4 11.6 4 9.8z"/><path d="M2 8h2M12 8h2M6.5 7.5v1M9.5 7.5v1"/></svg>',
   merge: '<svg viewBox="0 0 16 16"><path d="M4.5 2v3c0 2.5 3.5 3 3.5 5.5V14M11.5 2v3c0 2.5-3.5 3-3.5 5.5M6 12.5l2 2 2-2"/></svg>',
+  play: '<svg viewBox="0 0 16 16"><path d="M5 3.5v9l7-4.5z"/></svg>',
   copy: '<svg viewBox="0 0 16 16"><path d="M3.5 10.5V3.2c0-.4.3-.7.7-.7h6.3"/><rect x="5.5" y="4.5" width="7" height="9" rx=".8"/></svg>',
   gear: '<svg viewBox="0 0 16 16"><path d="M12.83 6.71L14.51 6.91L14.51 9.09L12.83 9.29L12.33 10.5L13.37 11.83L11.83 13.37L10.5 12.33L9.29 12.83L9.09 14.51L6.91 14.51L6.71 12.83L5.5 12.33L4.17 13.37L2.63 11.83L3.67 10.5L3.17 9.29L1.49 9.09L1.49 6.91L3.17 6.71L3.67 5.5L2.63 4.17L4.17 2.63L5.5 3.67L6.71 3.17L6.91 1.49L9.09 1.49L9.29 3.17L10.5 3.67L11.83 2.63L13.37 4.17L12.33 5.5z"/><circle cx="8" cy="8" r="2.1"/></svg>',
   refresh: '<svg viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v3h-3"/></svg>',
@@ -43,10 +47,12 @@ const el = {
   mergedSection: document.getElementById("merged-section"),
   mergeTarget: document.getElementById("merge-target"),
   mergeText: document.getElementById("merge-text"),
+  openChat: document.getElementById("open-chat"),
   projectFilter: document.getElementById("project-filter"),
   refresh: document.getElementById("refresh"),
   languageSelect: document.getElementById("language-select"),
   resumeCommand: document.getElementById("resume-command"),
+  resumeSession: document.getElementById("resume-session"),
   search: document.getElementById("search"),
   settings: document.getElementById("settings"),
   settingsClose: document.getElementById("settings-close"),
@@ -69,6 +75,7 @@ const state = {
   toastTimer: 0,
   refreshing: false,
   refreshPending: false,
+  loaded: null,
   chatSessionId: null,
   chatMessageCount: 0,
   chatDetail: null
@@ -425,6 +432,10 @@ function updateFooter() {
   el.resumeCommand.textContent = session ? resumeCommand(session) || t("footer.noCommand") : t("footer.noSession");
   el.resumeCommand.title = resumeHint(session);
   el.copyResume.disabled = !session?.resumeCommand;
+  el.resumeSession.hidden = !HOST_ACTIONS.has("resume_session") || session?.source === "vscode";
+  el.resumeSession.disabled = !session;
+  el.openChat.hidden = !HOST_ACTIONS.has("open_in_chat");
+  el.openChat.disabled = !session;
   el.delete.disabled = !session || session.inUse || session.windowOpen || Boolean(session.protection);
   el.delete.title = session?.protection
     ? t("footer.protected", { reason: session.protection })
@@ -1079,6 +1090,8 @@ function bindEvents() {
       copyText(resumeCommand(state.selectedSession), event.currentTarget);
     }
   });
+  el.resumeSession.addEventListener("click", () => runHostAction("resume_session"));
+  el.openChat.addEventListener("click", () => runHostAction("open_in_chat"));
   el.delete.addEventListener("click", openDeleteDialog);
   el.mergeButton.addEventListener("click", openMergeDialog);
   el.mergeCancel.addEventListener("click", closeMergeDialog);
@@ -1130,6 +1143,41 @@ function bindEvents() {
   });
 }
 
+async function runHostAction(action) {
+  const id = state.selectedSession?.id;
+  if (!id) {
+    return;
+  }
+  try {
+    await invoke(action, { id });
+  } catch (error) {
+    showToast(String(error), true);
+  }
+}
+
+// The host asks to show a session, e.g. one picked in VS Code's quick search.
+async function revealSession({ id, query = "" } = {}) {
+  if (!id) {
+    return;
+  }
+  await state.loaded;
+  el.search.value = query;
+  el.clearSearch.hidden = !query;
+  clearTimeout(state.searchTimer);
+  await runSearch({ keepSelection: false });
+  const hit = state.hits.find((candidate) => candidate.id === id);
+  if (hit?.done && !state.showDone) {
+    state.showDone = true;
+    localStorage.setItem("showDone", "true");
+    updateToggleDoneTitle();
+  }
+  if (hit && state.project && hit.project.key !== state.project) {
+    setProject("");
+  }
+  renderList();
+  await selectSession(id, { focusList: true });
+}
+
 async function init() {
   hydrateIcons();
   await initI18n();
@@ -1142,8 +1190,9 @@ async function init() {
     el.listEmpty.textContent = hasTranslation("app.notInTauri") ? t("app.notInTauri") : "Run this page inside the Tauri app.";
     return;
   }
-  refresh();
+  state.loaded = refresh();
   window.__TAURI__.event?.listen("sessions-changed", () => refresh({ silent: true }));
+  window.__TAURI__.event?.listen("reveal-session", (event) => revealSession(event.payload));
   el.search.focus();
 }
 

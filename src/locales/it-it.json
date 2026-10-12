@@ -37,6 +37,8 @@
   "footer.noSession": "Nessuna sessione selezionata",
   "footer.noCommand": "Nessun comando disponibile",
   "footer.copyResume": "Copia comando di ripresa",
+  "footer.resumeInTerminal": "Riprendi nel terminale",
+  "footer.openInChat": "Apri nella chat di VS Code",
   "footer.openInVsCode": "Apre la cartella della chat in VS Code; la chat è elencata nella visualizzazione Chat di VS Code",
   "footer.noFolder": "Questa chat non ha una cartella da aprire",
   "footer.runFrom": "Esegui da {folder}",

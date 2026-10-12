@@ -1,0 +1,105 @@
+{
+  "name": "copilot-session-search",
+  "displayName": "Copilot Session Search",
+  "description": "Full-text search across your local GitHub Copilot CLI sessions and VS Code chats. Read, resume, open, merge and delete them.",
+  "version": "0.3.0",
+  "publisher": "lcantero",
+  "license": "MIT",
+  "icon": "icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/luiscantero/CopilotSessionSearch"
+  },
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Other"
+  ],
+  "keywords": [
+    "copilot",
+    "chat",
+    "session",
+    "history",
+    "search"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onWebviewPanel:copilotSessionSearch"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "copilotSessionSearch.search",
+        "title": "Search Sessions…",
+        "category": "Copilot Session Search",
+        "icon": "$(search)"
+      },
+      {
+        "command": "copilotSessionSearch.open",
+        "title": "Open Session Browser",
+        "category": "Copilot Session Search",
+        "icon": "$(history)"
+      },
+      {
+        "command": "copilotSessionSearch.showLog",
+        "title": "Show Log",
+        "category": "Copilot Session Search"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "copilotSessionSearch.search",
+        "key": "ctrl+alt+f",
+        "mac": "cmd+alt+f"
+      }
+    ],
+    "configuration": {
+      "title": "Copilot Session Search",
+      "properties": {
+        "copilotSessionSearch.copilotCommand": {
+          "type": "string",
+          "default": "copilot",
+          "markdownDescription": "Command used to start the GitHub Copilot CLI when resuming a session in the terminal. `--resume=<id>` is appended."
+        },
+        "copilotSessionSearch.quickPick.defaultAction": {
+          "type": "string",
+          "enum": [
+            "showConversation",
+            "resume",
+            "openInChat"
+          ],
+          "enumDescriptions": [
+            "Show the conversation in the session browser.",
+            "Resume Copilot CLI sessions in a terminal; VS Code chats open in the Chat view.",
+            "Open the session in VS Code's Chat view."
+          ],
+          "default": "showConversation",
+          "description": "What happens when you press Enter on a session in the quick search."
+        },
+        "copilotSessionSearch.sidecarPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Path to a custom build of the search backend (copilot-session-search-sidecar). Leave empty to use the bundled one."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build:sidecar": "node scripts/build.mjs --sidecar",
+    "build:assets": "node scripts/build.mjs --assets",
+    "build": "node scripts/build.mjs && tsc -p ./",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "npm run build && node scripts/package.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "~1.100.0",
+    "@vscode/vsce": "^3.0.0",
+    "typescript": "^5.6.0"
+  }
+}

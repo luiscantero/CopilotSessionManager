@@ -37,6 +37,8 @@
   "footer.noSession": "לא נבחרה הפעלה",
   "footer.noCommand": "אין פקודה זמינה",
   "footer.copyResume": "העתק פקודת המשך",
+  "footer.resumeInTerminal": "המשך בטרמינל",
+  "footer.openInChat": "פתח בצ'אט VS Code",
   "footer.openInVsCode": "פותח את התיקיה של הצ'אט ב-VS Code; הצ'אט מופיע בתצוגת הצ'אט של VS Code",
   "footer.noFolder": "לצ'אט זה אין תיקיה לפתיחה",
   "footer.runFrom": "הפעל מתוך {folder}",

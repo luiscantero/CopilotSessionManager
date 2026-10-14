@@ -55,6 +55,7 @@
 
   window.__TAURI__ = {
     hostActions: init.hostActions || [],
+    workspaceFolders: init.workspaceFolders || [],
     core: {
       invoke(command, args = {}) {
         const id = nextId++;

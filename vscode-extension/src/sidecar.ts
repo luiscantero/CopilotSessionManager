@@ -80,8 +80,15 @@ export class Sidecar implements vscode.Disposable {
     });
   }
 
-  /** Updates the index from disk. Only changed session files are parsed again. */
-  refresh(): Promise<void> {
+  /**
+   * Updates the index from disk. Only changed session files are parsed again. With `folders`,
+   * the first refresh indexes just their sessions and the backend builds the full index in the
+   * background, reporting a change when done; such a refresh does not count as indexed.
+   */
+  refresh(folders: string[] = []): Promise<void> {
+    if (folders.length) {
+      return this.request<number>("refresh_sessions", { folders }).then(() => undefined);
+    }
     const run = this.request<number>("refresh_sessions").then(() => undefined);
     this.indexed = run.catch((error) => {
       this.indexed = undefined;

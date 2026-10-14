@@ -14,7 +14,7 @@
 use crate::session_move::MoveError;
 use crate::{
     file_stamp, first_line_title, is_session_id, non_empty, normalize_path, ChatMessage, Entry,
-    FileStamp, ParsedEvents, Project, SessionSummary,
+    FileStamp, ParsedEvents, Project, Scope, SessionSummary,
 };
 use rayon::prelude::*;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior};
@@ -45,6 +45,18 @@ const TERMINALS_KEY: &str = "chat.terminalSessions";
 pub struct Cache {
     chats: HashMap<PathBuf, Arc<ParsedChat>>,
     metadata: HashMap<PathBuf, (FileStamp, Arc<HashMap<String, ChatMeta>>)>,
+}
+
+impl Cache {
+    /// Adds the entries of `other` that this cache does not have.
+    pub fn adopt(&mut self, other: Cache) {
+        for (path, chat) in other.chats {
+            self.chats.entry(path).or_insert(chat);
+        }
+        for (dir, meta) in other.metadata {
+            self.metadata.entry(dir).or_insert(meta);
+        }
+    }
 }
 
 pub struct ParsedChat {
@@ -88,9 +100,10 @@ struct ChatCopy {
     workspace: Arc<Workspace>,
 }
 
-/// Indexes all VS Code local chats with at least one message.
-pub fn index(cache: &mut Cache, config_dirs: &[PathBuf]) -> Vec<Entry> {
-    let files: Vec<ChatFile> = discover(config_dirs).into_values().collect();
+/// Indexes all VS Code local chats with at least one message, or with `scope` only those of
+/// workspaces in the scope; the cache then keeps the other chats.
+pub fn index(cache: &mut Cache, config_dirs: &[PathBuf], scope: Option<&Scope>) -> Vec<Entry> {
+    let files: Vec<ChatFile> = discover(config_dirs, scope).into_values().collect();
 
     let storage_dirs: Vec<PathBuf> = {
         let mut dirs: Vec<PathBuf> = files
@@ -139,12 +152,20 @@ pub fn index(cache: &mut Cache, config_dirs: &[PathBuf]) -> Vec<Entry> {
         })
         .collect();
 
-    cache.chats = parsed
-        .into_iter()
-        .map(|(file, chat)| (file.path, chat))
-        .collect();
-    cache.metadata = metadata;
+    let chats = parsed.into_iter().map(|(file, chat)| (file.path, chat));
+    if scope.is_some() {
+        cache.chats.extend(chats);
+        cache.metadata.extend(metadata);
+    } else {
+        cache.chats = chats.collect();
+        cache.metadata = metadata;
+    }
     entries
+}
+
+fn workspace_in_scope(workspace: &Workspace, scope: &Scope) -> bool {
+    let folder = workspace.folder.as_deref();
+    scope.includes(folder.filter(|_| workspace.is_git_root), folder)
 }
 
 fn build_entry(file: &ChatFile, chat: &ParsedChat, meta: &ChatMeta) -> Entry {
@@ -205,25 +226,33 @@ fn build_entry(file: &ChatFile, chat: &ParsedChat, meta: &ChatMeta) -> Entry {
     }
 }
 
-/// Finds every chat file, keyed by lowercase chat ID.
-fn discover(config_dirs: &[PathBuf]) -> HashMap<String, ChatFile> {
+/// Finds every chat file, keyed by lowercase chat ID. With `scope`, only of workspaces in it; a
+/// newer copy of their chats in another workspace is then missed until the full index is built.
+fn discover(config_dirs: &[PathBuf], scope: Option<&Scope>) -> HashMap<String, ChatFile> {
     let mut chat_dirs: Vec<(PathBuf, Arc<Workspace>)> = Vec::new();
     for config_dir in config_dirs {
         let windows = open_windows(config_dir);
         let user_dir = config_dir.join("User");
         if let Ok(entries) = fs::read_dir(user_dir.join("workspaceStorage")) {
-            for entry in entries.flatten() {
-                let storage_dir = entry.path();
-                let chat_dir = storage_dir.join("chatSessions");
-                if chat_dir.is_dir() {
-                    let workspace = read_workspace(storage_dir, windows.as_ref());
+            let storage_dirs: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+            let workspaces: Vec<(PathBuf, Workspace)> = storage_dirs
+                .into_par_iter()
+                .filter_map(|storage_dir| {
+                    let chat_dir = storage_dir.join("chatSessions");
+                    chat_dir
+                        .is_dir()
+                        .then(|| (chat_dir, read_workspace(storage_dir, windows.as_ref())))
+                })
+                .collect();
+            for (chat_dir, workspace) in workspaces {
+                if scope.is_none_or(|scope| workspace_in_scope(&workspace, scope)) {
                     chat_dirs.push((chat_dir, Arc::new(workspace)));
                 }
             }
         }
         let global = user_dir.join("globalStorage");
         let empty_window = global.join("emptyWindowChatSessions");
-        if empty_window.is_dir() {
+        if scope.is_none() && empty_window.is_dir() {
             let workspace = Workspace {
                 storage_dir: global,
                 folder: None,
@@ -416,7 +445,7 @@ pub fn delete(config_dirs: &[PathBuf], id: &str) -> Result<(), String> {
     if !is_session_id(&id) {
         return Err("Invalid session id".to_string());
     }
-    let chat = discover(config_dirs)
+    let chat = discover(config_dirs, None)
         .remove(&id)
         .ok_or_else(|| format!("Chat {id} was not found"))?;
     if let Some(copy) = chat.copies.iter().find(|copy| copy.workspace.window_open) {
@@ -538,7 +567,7 @@ pub fn move_chat(
     id: &str,
     folders: &[String],
 ) -> Result<Option<(PathBuf, PathBuf)>, MoveError> {
-    let chat = discover(config_dirs)
+    let chat = discover(config_dirs, None)
         .remove(&id.to_ascii_lowercase())
         .ok_or_else(|| MoveError::Gone("the chat was not found".to_string()))?;
     let source = chat.workspace.clone();
@@ -572,7 +601,7 @@ pub fn move_chat_back(
     from_storage: &Path,
     into_storage: &Path,
 ) -> Result<(), MoveError> {
-    let chat = discover(config_dirs)
+    let chat = discover(config_dirs, None)
         .remove(&id.to_ascii_lowercase())
         .ok_or_else(|| MoveError::Gone("the chat was deleted".to_string()))?;
     let current = chat
@@ -1713,14 +1742,14 @@ mod tests {
         let config_dirs = std::slice::from_ref(&config_dir);
 
         // Not running: the window list is stale.
-        assert!(discover(config_dirs)[CHAT]
+        assert!(discover(config_dirs, None)[CHAT]
             .copies
             .iter()
             .all(|c| !c.workspace.window_open));
 
         // This test process stands in for a running VS Code.
         fs::write(config_dir.join("code.lock"), std::process::id().to_string()).unwrap();
-        let chats = discover(config_dirs);
+        let chats = discover(config_dirs, None);
         assert!(chats[CHAT].copies[0].workspace.window_open);
         let err = delete(config_dirs, CHAT).unwrap_err();
         assert!(err.contains("Close that VS Code window"), "{err}");

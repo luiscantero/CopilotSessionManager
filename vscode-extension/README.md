@@ -34,7 +34,8 @@ This extension puts all of them in one searchable list, wherever they were start
 - **Session browser** (*Session Manager for GitHub Copilot: Open Session Browser*): a session list
   and a conversation reader in an editor tab, themed like your editor, with highlighted matches, a
   repository filter, project merging, copy buttons and delete. It updates automatically while
-  sessions change on disk.
+  sessions change on disk. When it opens, the filter selects the project of the open folder, if it
+  has sessions. Those sessions are listed first, while the others are indexed in the background.
 - **Resume in terminal**: opens a terminal in the session's folder and runs
   `copilot --resume=<id>`. Asks first if the session is in use by another Copilot process.
 - **Open in VS Code chat**:

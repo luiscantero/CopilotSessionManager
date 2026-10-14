@@ -123,7 +123,8 @@ export class SessionsPanel implements vscode.Disposable {
       return command === "resume_session" ? resumeInTerminal(session) : openInChat(session);
     }
     if (command === "refresh_sessions") {
-      return this.sidecar.refresh();
+      const folders = Array.isArray(args.folders) ? args.folders.filter((folder) => typeof folder === "string") : [];
+      return this.sidecar.refresh(folders);
     }
     return this.sidecar.request(command, args);
   }
@@ -134,7 +135,10 @@ export class SessionsPanel implements vscode.Disposable {
     const nonce = crypto.randomBytes(16).toString("base64");
     const init = {
       hostActions: HOST_ACTIONS,
-      storage: this.context.globalState.get<Record<string, string>>(STORAGE_KEY, {})
+      storage: this.context.globalState.get<Record<string, string>>(STORAGE_KEY, {}),
+      workspaceFolders: (vscode.workspace.workspaceFolders ?? [])
+        .filter((folder) => folder.uri.scheme === "file")
+        .map((folder) => folder.uri.fsPath)
     };
     const csp = [
       "default-src 'none'",

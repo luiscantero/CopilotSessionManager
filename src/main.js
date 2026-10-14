@@ -81,6 +81,7 @@ const state = {
   refreshing: false,
   refreshPending: false,
   loaded: null,
+  workspaceProjectChecked: false,
   chatSessionId: null,
   chatMessageCount: 0,
   chatDetail: null
@@ -283,12 +284,28 @@ function visibleHits() {
   return state.project ? hits.filter((hit) => hit.project.key === state.project) : hits;
 }
 
-function setProject(key) {
+function setProject(key, name = "") {
   state.project = key;
   const match = state.hits.find((hit) => hit.project.key === key);
-  state.projectName = key ? match?.project.name || state.projectName : "";
+  state.projectName = key ? name || match?.project.name || state.projectName : "";
   localStorage.setItem("project", state.project);
   localStorage.setItem("projectName", state.projectName);
+}
+
+// In VS Code, start filtered to the project of the open folder, if it has sessions.
+async function selectWorkspaceProject() {
+  const folders = window.__TAURI__?.workspaceFolders || [];
+  if (!folders.length) {
+    return;
+  }
+  try {
+    const project = await invoke("project_for_folders", { folders });
+    if (project) {
+      setProject(project.key, project.name);
+    }
+  } catch (error) {
+    console.warn("Unable to find the project of the workspace", error);
+  }
 }
 
 function renderProjectOptions() {
@@ -810,7 +827,12 @@ async function refresh({ silent = false } = {}) {
     el.listEmpty.textContent = t("list.indexing");
   }
   try {
-    await invoke("refresh_sessions");
+    const folders = window.__TAURI__?.workspaceFolders || [];
+    await invoke("refresh_sessions", folders.length ? { folders } : {});
+    if (!state.workspaceProjectChecked) {
+      state.workspaceProjectChecked = true;
+      await selectWorkspaceProject();
+    }
     await runSearch({ rehighlight: !silent });
     if (state.selectedId) {
       await selectSession(state.selectedId, { silent });

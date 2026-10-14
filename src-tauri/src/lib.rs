@@ -2,7 +2,7 @@ use rayon::prelude::*;
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -147,6 +147,57 @@ struct Index {
     vscode_chats: vscode_chat::Cache,
     merges: project_merges::Merges,
     entries: Vec<Entry>,
+    /// When set, [`rebuild`] only indexes the sessions of these folders, so that they show up
+    /// quickly while the full index is built in the background.
+    scope: Option<Scope>,
+}
+
+impl Index {
+    /// Takes over the parsed files of `other`, a full index built in the background, and
+    /// stops limiting the index to its scope. The next [`rebuild`] lists every session.
+    fn adopt(&mut self, other: Index) {
+        for (id, parsed) in other.parsed {
+            self.parsed.entry(id).or_insert(parsed);
+        }
+        for (path, link) in other.vscode_links {
+            self.vscode_links.entry(path).or_insert(link);
+        }
+        self.vscode_chats.adopt(other.vscode_chats);
+        self.scope = None;
+    }
+}
+
+/// Folders, such as those open in VS Code, whose sessions are indexed first.
+#[derive(Clone, Debug)]
+struct Scope {
+    folders: Vec<String>,
+}
+
+impl Scope {
+    fn new(folders: &[String]) -> Self {
+        Self {
+            folders: folders
+                .iter()
+                .map(|folder| normalize_path(folder))
+                .collect(),
+        }
+    }
+
+    /// Whether a session may belong to the project of a scope folder: its git root contains
+    /// the folder, or its git root or working folder is inside it. See [`project_for_folder`].
+    fn includes(&self, git_root: Option<&str>, cwd: Option<&str>) -> bool {
+        let git_root = git_root.map(normalize_path);
+        let cwd = cwd.map(normalize_path);
+        self.folders.iter().any(|folder| {
+            git_root
+                .as_deref()
+                .is_some_and(|root| path_within(folder, root).is_some())
+                || [&git_root, &cwd]
+                    .into_iter()
+                    .flatten()
+                    .any(|path| path_within(path, folder).is_some())
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -324,6 +375,8 @@ struct VsCodeState {
     done: bool,
     additions: Option<u64>,
     deletions: Option<u64>,
+    /// Folders the session works in.
+    folders: Vec<String>,
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -534,6 +587,14 @@ fn read_vscode_state() -> HashMap<String, VsCodeState> {
                     done: data["isArchived"].as_bool().unwrap_or(false),
                     additions: data["changes"]["additions"].as_u64(),
                     deletions: data["changes"]["deletions"].as_u64(),
+                    folders: data["workingDirectories"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .chain([&data["project"]["uri"]])
+                        .filter_map(Value::as_str)
+                        .filter_map(vscode_chat::file_uri_to_path)
+                        .collect(),
                 });
         }
     }
@@ -660,16 +721,21 @@ fn read_sdk_session_id(db_path: &Path) -> Option<String> {
 }
 
 /// VS Code agent sessions use their own IDs; each per-session database records the Copilot
-/// SDK session ID that names the folder in `~/.copilot/session-state`.
-fn refresh_vscode_links(cache: &mut HashMap<PathBuf, VsCodeLink>) -> HashMap<String, String> {
+/// SDK session ID that names the folder in `~/.copilot/session-state`. With `only`, reads just
+/// the databases of those VS Code session IDs and keeps the other cached links.
+fn refresh_vscode_links(
+    cache: &mut HashMap<PathBuf, VsCodeLink>,
+    only: Option<&HashSet<String>>,
+) -> HashMap<String, String> {
     let candidates: Vec<(PathBuf, String)> = vscode_config_dirs()
         .into_iter()
         .filter_map(|config_dir| fs::read_dir(config_dir.join("agentSessionData")).ok())
         .flat_map(|entries| entries.flatten())
         .filter_map(|entry| {
-            let id = entry.file_name().into_string().ok()?;
+            let id = entry.file_name().into_string().ok()?.to_ascii_lowercase();
+            let wanted = is_session_id(&id) && only.is_none_or(|only| only.contains(&id));
             let db_path = entry.path().join("session.db");
-            (is_session_id(&id) && db_path.is_file()).then(|| (db_path, id.to_ascii_lowercase()))
+            (wanted && db_path.is_file()).then_some((db_path, id))
         })
         .collect();
 
@@ -690,7 +756,11 @@ fn refresh_vscode_links(cache: &mut HashMap<PathBuf, VsCodeLink>) -> HashMap<Str
         })
         .collect();
 
-    *cache = links.into_iter().collect();
+    if only.is_some() {
+        cache.extend(links);
+    } else {
+        *cache = links.into_iter().collect();
+    }
     let mut sdk_to_vscode = HashMap::new();
     for link in cache.values() {
         if let Some(sdk_id) = &link.sdk_id {
@@ -826,13 +896,37 @@ fn rebuild(index: &mut Index) -> Result<(), String> {
     };
 
     let vscode = read_vscode_state();
-    let sdk_to_vscode = refresh_vscode_links(&mut index.vscode_links);
+    let scope = index.scope.clone();
+    // VS Code session IDs of the agent sessions in the scope, whose links are read.
+    let linked: Option<HashSet<String>> = scope.as_ref().map(|scope| {
+        vscode
+            .iter()
+            .filter(|(_, state)| {
+                state
+                    .folders
+                    .iter()
+                    .any(|folder| scope.includes(Some(folder), Some(folder)))
+            })
+            .map(|(id, _)| id.clone())
+            .collect()
+    });
+    let sdk_to_vscode = refresh_vscode_links(&mut index.vscode_links, linked.as_ref());
     let protected_dirs = ProtectedDirs::detect();
     let previous = &index.parsed;
+    let in_scope = |meta: &WorkspaceMeta| {
+        let (git_root, cwd) = (meta.git_root.as_deref(), meta.cwd.as_deref());
+        scope
+            .as_ref()
+            .is_none_or(|scope| scope.includes(git_root, cwd))
+    };
 
     let mut entries: Vec<Entry> = dirs
         .par_iter()
         .filter_map(|(id, dir)| {
+            let meta = read_workspace(dir);
+            if !in_scope(&meta) {
+                return None;
+            }
             let events_path = dir.join("events.jsonl");
             let stamp = file_stamp(&events_path);
             let events = match previous.get(id) {
@@ -843,7 +937,6 @@ fn rebuild(index: &mut Index) -> Result<(), String> {
                 return None;
             }
 
-            let meta = read_workspace(dir);
             let vs = sdk_to_vscode
                 .get(id)
                 .and_then(|vscode_id| vscode.get(vscode_id))
@@ -907,15 +1000,20 @@ fn rebuild(index: &mut Index) -> Result<(), String> {
     entries.extend(vscode_chat::index(
         &mut index.vscode_chats,
         &vscode_config_dirs(),
+        scope.as_ref(),
     ));
     assign_projects(&mut entries, &index.merges.moved_roots());
     project_merges::apply(&mut entries, &index.merges);
     entries.sort_by(|a, b| b.summary.updated_at.cmp(&a.summary.updated_at));
-    index.parsed = entries
+    let parsed = entries
         .iter()
         .filter(|entry| entry.summary.source == "cli")
-        .map(|entry| (entry.summary.id.clone(), entry.events.clone()))
-        .collect();
+        .map(|entry| (entry.summary.id.clone(), entry.events.clone()));
+    if scope.is_some() {
+        index.parsed.extend(parsed);
+    } else {
+        index.parsed = parsed.collect();
+    }
     index.entries = entries;
     Ok(())
 }
@@ -1057,6 +1155,55 @@ fn list_project_infos(index: &Index) -> Vec<ProjectInfo> {
     let mut projects: Vec<ProjectInfo> = projects.into_values().collect();
     projects.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     projects
+}
+
+/// Project of the first of `folders` (for example the folders open in VS Code) that has one.
+fn project_for_folders(index: &Index, folders: &[String]) -> Option<Project> {
+    folders
+        .iter()
+        .find_map(|folder| project_for_folder(index, folder))
+}
+
+/// Project of the sessions in `folder`: the innermost git repository containing it, else sessions
+/// started exactly in it, else the single project of the sessions started below it.
+fn project_for_folder(index: &Index, folder: &str) -> Option<Project> {
+    let folder = normalize_path(folder);
+    let mut containing: Option<(usize, &Option<String>, &Project)> = None;
+    let mut below: Option<&Project> = None;
+    let mut below_ambiguous = false;
+    for entry in &index.entries {
+        let project = &entry.summary.project;
+        if project.key == "none" || project.key.starts_with("app:") {
+            continue;
+        }
+        let git_root = entry.git_root.as_deref().map(normalize_path);
+        let cwd = entry.summary.cwd.as_deref().map(normalize_path);
+        // Any folder contains the session's cwd when that is a drive root or the home folder, so
+        // only git roots count as containing the workspace folder.
+        let root = git_root
+            .as_deref()
+            .filter(|root| path_within(&folder, root).is_some())
+            .or_else(|| cwd.as_deref().filter(|cwd| *cwd == folder));
+        if let Some(root) = root {
+            let candidate = (root.len(), &entry.summary.updated_at, project);
+            if containing.is_none_or(|best| (candidate.0, candidate.1) > (best.0, best.1)) {
+                containing = Some(candidate);
+            }
+        } else if [&git_root, &cwd]
+            .into_iter()
+            .flatten()
+            .any(|path| path_within(path, &folder).is_some())
+        {
+            match below {
+                Some(known) if known.key != project.key => below_ambiguous = true,
+                _ => below = Some(project),
+            }
+        }
+    }
+    containing
+        .map(|(_, _, project)| project)
+        .or(below.filter(|_| !below_ambiguous))
+        .cloned()
 }
 
 #[derive(Default, Serialize)]
@@ -1777,6 +1924,73 @@ mod tests {
             &[(r"C:\Repos\old".to_string(), "me/Old".to_string())],
         );
         assert_eq!(left[0].summary.project.key, "repo:me/old");
+    }
+
+    #[test]
+    fn finds_project_of_workspace_folder() {
+        let entry =
+            |cwd, git_root, repository| test_entry("t", Vec::new(), cwd, git_root, repository);
+        let mut entries = vec![
+            entry(
+                Some(r"C:\Repos\app\src"),
+                Some(r"C:\Repos\app"),
+                Some("me/app"),
+            ),
+            entry(Some(r"C:\Repos\notes"), None, None),
+            entry(
+                Some(r"C:\Repos\mono\a"),
+                Some(r"C:\Repos\mono\a"),
+                Some("me/a"),
+            ),
+            entry(
+                Some(r"C:\Repos\mono\b"),
+                Some(r"C:\Repos\mono\b"),
+                Some("me/b"),
+            ),
+            entry(Some(r"C:\Work\one\x"), Some(r"C:\Work\one\x"), Some("me/x")),
+            entry(Some(r"C:\"), None, None),
+        ];
+        assign_projects(&mut entries, &[]);
+        let index = Index {
+            entries,
+            ..Index::default()
+        };
+        let key = |folders: &[&str]| {
+            let folders: Vec<String> = folders.iter().map(|f| f.to_string()).collect();
+            project_for_folders(&index, &folders).map(|project| project.key)
+        };
+        assert_eq!(key(&[r"C:\Repos\app"]).as_deref(), Some("repo:me/app"));
+        // Subfolder of a repository.
+        assert_eq!(
+            key(&[r"C:\Repos\app\docs\"]).as_deref(),
+            Some("repo:me/app")
+        );
+        assert!(key(&[r"C:\Repos\notes"]).unwrap().starts_with("path:"));
+        // Only one project below the folder.
+        assert_eq!(key(&[r"C:\Work"]).as_deref(), Some("repo:me/x"));
+        // Several projects below the folder, or none at all (the C:\ session does not count).
+        assert_eq!(key(&[r"C:\Repos\mono"]), None);
+        assert_eq!(key(&[r"D:\Elsewhere"]), None);
+        // The first folder with a project wins.
+        assert_eq!(
+            key(&[r"D:\Elsewhere", r"C:\Repos\mono\b", r"C:\Repos\app"]).as_deref(),
+            Some("repo:me/b")
+        );
+    }
+
+    #[test]
+    fn scope_includes_sessions_of_its_folders() {
+        let scope = Scope::new(&[r"C:\Repos\app\docs".to_string(), r"C:\Work\".to_string()]);
+        // Repository containing a scope folder.
+        assert!(scope.includes(Some(r"C:\Repos\app"), Some(r"C:\Repos\app\src")));
+        // Inside a scope folder.
+        assert!(scope.includes(None, Some(r"C:\Repos\app\docs\api")));
+        assert!(scope.includes(None, Some(r"C:\Work")));
+        // A working folder containing a scope folder is not enough: it could be C:\.
+        assert!(!scope.includes(None, Some(r"C:\Repos\app")));
+        assert!(!scope.includes(None, Some(r"C:\")));
+        assert!(!scope.includes(Some(r"C:\Repos\app-old"), Some(r"C:\Repos\app-old")));
+        assert!(!scope.includes(None, None));
     }
 
     #[test]

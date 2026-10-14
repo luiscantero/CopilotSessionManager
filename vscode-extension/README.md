@@ -117,15 +117,33 @@ current platform; to build for another one, set `SIDECAR_TARGET` (Rust target tr
 To package a backend built elsewhere, point `SIDECAR_BINARY` at it instead of `SIDECAR_TARGET`.
 
 For Linux, build a static backend (no glibc version requirement) with
-[cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild), for example in WSL, and package it
-from Windows:
+[cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) in WSL, and package it from
+Windows.
+
+One-time setup in WSL (a current Rust; older ones such as 1.64 cannot build the dependencies):
+
+```bash
+rustup update stable
+rustup target add x86_64-unknown-linux-musl
+cargo install --locked cargo-zigbuild
+mkdir -p ~/.local/zig
+curl -L https://ziglang.org/download/0.14.1/zig-x86_64-linux-0.14.1.tar.xz | tar -xJ --strip-components=1 -C ~/.local/zig
+```
+
+Then, in PowerShell from the repository root (`~/.local/zig` is put on the `PATH` here, since
+`bash -lc` does not read `~/.bashrc`):
 
 ```powershell
-wsl -e bash -lc "cd vscode-extension/sidecar && rustup target add x86_64-unknown-linux-musl && CARGO_TARGET_DIR=~/.cache/csm-sidecar cargo zigbuild --release --locked --target x86_64-unknown-linux-musl"
-$env:SIDECAR_BINARY = "\\wsl.localhost\Ubuntu\home\<user>\.cache\csm-sidecar\x86_64-unknown-linux-musl\release\copilot-session-manager-sidecar"
+wsl -e bash -lc 'cd vscode-extension/sidecar && PATH=~/.local/zig:$PATH CARGO_TARGET_DIR=~/.cache/csm-sidecar cargo zigbuild --release --locked --target x86_64-unknown-linux-musl'
+$env:SIDECAR_BINARY = wsl -e bash -c 'wslpath -w ~/.cache/csm-sidecar/x86_64-unknown-linux-musl/release/copilot-session-manager-sidecar'
 $env:VSCE_TARGET = "linux-x64"
-npm run package
+cd vscode-extension
+npm run package   # writes copilot-session-manager-linux-x64-<version>.vsix
+Remove-Item Env:SIDECAR_BINARY, Env:VSCE_TARGET
 ```
+
+This leaves the Linux backend in `bin/`; the next `npm run build` or `npm run package` puts the
+Windows one back.
 
 On Linux and macOS the extension sets the backend's executable bit on first use, since a VSIX
 packaged on Windows does not keep it.
@@ -133,6 +151,19 @@ packaged on Windows does not keep it.
 For development, run `npm run build` once, then `npm run watch`, and start VS Code with
 `code --extensionDevelopmentPath=<this folder>`.
 The UI files in `media/app` are copied from `../src` by `npm run build:assets`.
+
+### Release
+
+1. Set the new version in `vscode-extension/package.json` (`npm version <x.y.z> --no-git-tag-version`
+   in `vscode-extension`, which also updates `package-lock.json`),
+   `vscode-extension/sidecar/Cargo.toml`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`,
+   then run `cargo update -w` in `vscode-extension/sidecar` and in `src-tauri` to update the lock
+   files.
+2. Update the VSIX file name in the `code --install-extension` examples of both READMEs.
+3. Commit as `Release v<x.y.z>`, tag it (`git tag -a v<x.y.z> -m v<x.y.z>`) and push the commit
+   and the tag.
+4. Package the Windows VSIX (`npm run package`) and the Linux VSIX (above), and upload both to the
+   Marketplace.
 
 ## Feedback
 

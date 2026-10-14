@@ -135,7 +135,7 @@ To build it from source instead, build the VSIX (requires Node.js 20+ and Rust) 
 cd vscode-extension
 npm install
 npm run package
-code --install-extension copilot-session-manager-win32-x64-0.4.0.vsix
+code --install-extension copilot-session-manager-win32-x64-0.5.0.vsix
 ```
 
 Or install the `.vsix` from VS Code's Extensions view (`...` > **Install from VSIX...**). Then press

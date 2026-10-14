@@ -108,7 +108,7 @@ Requirements: Node.js 20+, Rust (stable).
 cd vscode-extension
 npm install
 npm run package   # copies ../src, builds the sidecar and TypeScript, writes copilot-session-manager-<platform>-<version>.vsix
-code --install-extension copilot-session-manager-win32-x64-0.4.0.vsix
+code --install-extension copilot-session-manager-win32-x64-0.5.0.vsix
 ```
 
 The VSIX contains a native binary, so it is platform-specific. `npm run package` builds for the
